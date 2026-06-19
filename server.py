@@ -14,13 +14,14 @@ import urllib.parse
 
 def _data_dir() -> Path:
     if sys.platform == "darwin":
-        # Local padrão de dados no macOS — funciona independente de onde o .app está
         d = Path.home() / "Library" / "Application Support" / "ActivityTracker"
-        d.mkdir(parents=True, exist_ok=True)
-        return d
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent  # Windows exe
-    return Path(__file__).parent  # modo desenvolvimento
+    elif sys.platform == "win32":
+        appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        d = Path(appdata) / "ActivityTracker"
+    else:
+        d = Path.home() / ".local" / "share" / "ActivityTracker"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 def _migrate_if_needed(log_file: Path):
     """Na primeira execução, copia dados de locais anteriores."""
@@ -300,12 +301,19 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <div class="settings-row">
         <div class="settings-lbl">
           <strong>Rastrear em segundo plano</strong>
-          <span>Inicia automaticamente no login e continua rastreando mesmo com o app fechado</span>
+          <span>Continua registrando atividades mesmo com o painel fechado</span>
         </div>
         <div class="tog" id="tog-bg" onclick="toggleBackground()"><div class="tog-knob"></div></div>
       </div>
+      <div class="settings-row">
+        <div class="settings-lbl">
+          <strong>Iniciar no login</strong>
+          <span>Abre o painel automaticamente ao iniciar sessão</span>
+        </div>
+        <div class="tog" id="tog-login" onclick="toggleLogin()"><div class="tog-knob"></div></div>
+      </div>
       <div class="settings-info">
-        <strong>Dados salvos em</strong>
+        <strong>Arquivo de dados</strong>
         <span id="settings-data-dir">—</span>
       </div>
     </div>
@@ -626,14 +634,18 @@ setTimeout(_startApp, 300);
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 let _bgEnabled = false;
+let _loginEnabled = false;
 
 async function openSettings() {
   document.getElementById('settings-overlay').classList.remove('hidden');
   if (typeof pywebview !== 'undefined' && pywebview.api) {
     const s = await pywebview.api.get_settings();
     _bgEnabled = s.background_mode || false;
-    const tog = document.getElementById('tog-bg');
-    if (_bgEnabled) tog.classList.add('on'); else tog.classList.remove('on');
+    _loginEnabled = s.login_mode || false;
+    const togBg = document.getElementById('tog-bg');
+    if (_bgEnabled) togBg.classList.add('on'); else togBg.classList.remove('on');
+    const togLogin = document.getElementById('tog-login');
+    if (_loginEnabled) togLogin.classList.add('on'); else togLogin.classList.remove('on');
     const dd = document.getElementById('settings-data-dir');
     if (dd && s.data_dir) dd.textContent = s.data_dir;
   }
@@ -647,6 +659,13 @@ async function toggleBackground() {
   const tog = document.getElementById('tog-bg');
   if (_bgEnabled) tog.classList.add('on'); else tog.classList.remove('on');
   await pywebview.api.save_setting('background_mode', _bgEnabled);
+}
+async function toggleLogin() {
+  if (typeof pywebview === 'undefined' || !pywebview.api) return;
+  _loginEnabled = !_loginEnabled;
+  const tog = document.getElementById('tog-login');
+  if (_loginEnabled) tog.classList.add('on'); else tog.classList.remove('on');
+  await pywebview.api.save_setting('login_mode', _loginEnabled);
 }
 </script>
 </body>

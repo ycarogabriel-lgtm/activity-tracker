@@ -38,11 +38,13 @@ if IS_MACOS:
 def _data_dir() -> Path:
     if sys.platform == "darwin":
         d = Path.home() / "Library" / "Application Support" / "ActivityTracker"
-        d.mkdir(parents=True, exist_ok=True)
-        return d
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent  # Windows exe
-    return Path(__file__).parent  # modo desenvolvimento
+    elif sys.platform == "win32":
+        appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        d = Path(appdata) / "ActivityTracker"
+    else:
+        d = Path.home() / ".local" / "share" / "ActivityTracker"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 SCRIPT_DIR = _data_dir()
 LOG_FILE  = SCRIPT_DIR / "activity_log.json"
