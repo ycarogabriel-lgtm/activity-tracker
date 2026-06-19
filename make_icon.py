@@ -52,7 +52,7 @@ def svg_to_square_png():
         resized = wide.resize((920, new_h), Image.LANCZOS)
         canvas.paste(resized, ((size - 920) // 2, (size - new_h) // 2), resized)
         canvas.save(PNG)
-        print("[OK] icon.png  ← rsvg-convert")
+        print("[OK] icon.png  <- rsvg-convert")
     else:
         # Fallback: fundo escuro + texto via Pillow
         from PIL import ImageDraw, ImageFont
@@ -79,7 +79,7 @@ def svg_to_square_png():
         draw.text(((size - tw) // 2, (size - th) // 2), text,
                   fill=(255, 255, 255), font=font)
         canvas.save(PNG)
-        print("[OK] icon.png  ← Pillow (fallback)")
+        print("[OK] icon.png  <- Pillow (fallback)")
 
 
 # ── PNG → ICNS (macOS) ────────────────────────────────────────────────────────
@@ -97,7 +97,7 @@ def to_icns():
         f.unlink()
     iconset.rmdir()
     if r.returncode == 0:
-        print(f"[OK] icon.icns ← iconutil")
+        print(f"[OK] icon.icns <- iconutil")
     else:
         print("[AVISO] iconutil falhou — build continuará sem ícone personalizado")
 
@@ -110,7 +110,7 @@ def to_ico():
     imgs = [src.resize((s, s), Image.LANCZOS) for s in (16, 32, 48, 64, 128, 256)]
     imgs[0].save(ICO, format="ICO", sizes=[(s, s) for s in (16, 32, 48, 64, 128, 256)],
                  append_images=imgs[1:])
-    print(f"[OK] icon.ico  ← Pillow")
+    print(f"[OK] icon.ico  <- Pillow")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
