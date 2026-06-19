@@ -187,8 +187,22 @@ class AppApi:
         return get_api_data()
 
     def export_csv(self, date_filter=None):
-        from server import export_csv
-        return export_csv(date_filter)
+        import webview
+        from server import export_csv as _export_csv
+        csv_text = _export_csv(date_filter)
+        fname = f"atividades_{date_filter or 'todas'}.csv"
+
+        window = webview.windows[0]
+        result = window.create_file_dialog(
+            webview.SAVE_DIALOG, save_filename=fname,
+            file_types=("Arquivo CSV (*.csv)",),
+        )
+        if not result:
+            return None
+        path = result[0] if isinstance(result, (list, tuple)) else result
+        with open(path, "w", encoding="utf-8-sig") as f:
+            f.write(csv_text)
+        return path
 
     def get_settings(self):
         from server import LOG_FILE
@@ -244,6 +258,7 @@ def main():
         width=1300,
         height=820,
         min_size=(900, 600),
+        text_select=True,            # permite selecionar/copiar texto na janela
     )
     webview.start()
 

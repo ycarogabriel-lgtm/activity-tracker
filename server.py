@@ -483,16 +483,7 @@ function shiftWeek(dir) {
 
 async function exportData() {
   if (typeof pywebview !== 'undefined' && pywebview.api) {
-    const csv = await pywebview.api.export_csv(selectedDate || null);
-    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'atividades_' + (selectedDate || 'todas') + '.csv';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    await pywebview.api.export_csv(selectedDate || null); // abre diálogo nativo de salvar
   } else {
     window.location.href = '/export/csv' + (selectedDate ? '?date=' + selectedDate : '');
   }
