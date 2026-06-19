@@ -19,20 +19,26 @@ Baixe a versão mais recente em [**Releases**](https://github.com/ycarogabriel-l
 
 ### Primeira abertura
 
-Clique com botão direito no `ActivityTracker.app` → **Abrir** → **Abrir**.
+O macOS bloqueia apps não assinados pela App Store. Na primeira vez:
 
-> Isso é necessário apenas na primeira vez. O macOS exige essa confirmação para apps não assinados pela Apple Store.
+1. Tente abrir o `ActivityTracker.app` com duplo clique
+2. Aparecerá um aviso dizendo que o app não pode ser aberto — clique **OK** ou **Concluído**
+3. Vá em **Configurações do Sistema → Privacidade e Segurança**
+4. Role para baixo até encontrar a mensagem _"ActivityTracker foi bloqueado"_ e clique em **Abrir Mesmo Assim**
+5. Confirme com sua senha ou Touch ID
 
-### Assinar localmente (elimina o aviso de segurança)
+A partir daí o app abre normalmente com duplo clique.
 
-Para remover o aviso de vez, rode uma vez no Terminal após extrair o app:
+> **macOS Sequoia (15+):** o método de botão direito → Abrir foi removido. O único fluxo é pelo menu Privacidade e Segurança acima.
+
+### Alternativa via Terminal (abre sem nenhum aviso)
 
 ```bash
 xattr -cr ActivityTracker.app
 codesign --force --deep --sign - ActivityTracker.app
 ```
 
-Depois abra normalmente com duplo clique.
+Execute uma vez na pasta onde o app está. Depois é só dar duplo clique normalmente.
 
 ### Rastrear em segundo plano
 
