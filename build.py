@@ -9,6 +9,7 @@ Saída:
     macOS   → dist/ActivityTracker
 """
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -40,6 +41,41 @@ def make_icon():
     if sys.platform == "win32" and Path("icon.ico").exists():
         return "icon.ico"
     return None
+
+
+def build_daemon_macos():
+    """
+    Compila um binário headless separado (sem GUI/bundle) para o rastreador
+    em segundo plano. Necessário porque, se o daemon roda dentro do mesmo
+    .app, o macOS trata o processo em segundo plano como "a instância do
+    app" — ao clicar para reabrir, ele só reativa o processo sem janela
+    (parece travado) em vez de abrir uma nova janela.
+    """
+    name = f"{NAME}Daemon"
+    cmd = [
+        sys.executable, "-m", "PyInstaller",
+        "--onefile",
+        "--name", name,
+        "--distpath", str(DIST),
+        "--workpath", str(BUILD),
+        "--hidden-import", "tracker",
+        "--hidden-import", "server",
+        "--hidden-import", "reminder",
+        "--hidden-import", "psutil",
+        "daemon.py",
+    ]
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        print("\n[ERRO] Build do daemon falhou.")
+        sys.exit(1)
+
+    daemon_bin = DIST / name
+    app_resources = DIST / f"{NAME}.app" / "Contents" / "Resources"
+    app_resources.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(daemon_bin, app_resources / name)
+    daemon_bin.chmod(0o755)
+    (app_resources / name).chmod(0o755)
+    daemon_bin.unlink()
 
 
 def build():
@@ -90,6 +126,7 @@ def build():
 
     if sys.platform == "darwin":
         out = DIST / f"{NAME}.app"
+        build_daemon_macos()
     elif sys.platform == "win32":
         out = DIST / f"{NAME}.exe"
     else:

@@ -3,6 +3,7 @@ Inicializador do Activity Tracker.
 """
 
 import json
+import shutil
 import subprocess
 import sys
 import threading
@@ -19,6 +20,12 @@ _LOGIN_PLIST_PATH  = Path.home() / "Library" / "LaunchAgents" / f"{_LOGIN_PLIST_
 _REG_KEY           = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _REG_NAME          = "ActivityTracker-Daemon"
 _LOGIN_REG_NAME    = "ActivityTracker"
+
+# Binário headless do daemon, fora do bundle do .app — evita que o macOS
+# confunda o processo em segundo plano com a instância principal do app
+# (o que travava o app ao tentar reabri-lo).
+_MAC_DATA_DIR    = Path.home() / "Library" / "Application Support" / "ActivityTracker"
+_MAC_DAEMON_BIN  = _MAC_DATA_DIR / "ActivityTrackerDaemon"
 
 
 def _background_enabled() -> bool:
@@ -43,6 +50,20 @@ def _background_enabled() -> bool:
 def _enable_background():
     exe = sys.executable  # path do .app ou .exe
     if sys.platform == "darwin":
+        # Copia o binário headless (empacotado em Contents/Resources) para fora
+        # do .app, para que o LaunchAgent rode um processo com identidade
+        # própria, nunca confundido pelo macOS com a instância principal do app.
+        bundled_daemon = Path(exe).parent.parent / "Resources" / "ActivityTrackerDaemon"
+        program = exe
+        extra_args = ["--daemon"]
+        if bundled_daemon.exists():
+            _MAC_DATA_DIR.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(bundled_daemon, _MAC_DAEMON_BIN)
+            _MAC_DAEMON_BIN.chmod(0o755)
+            program = str(_MAC_DAEMON_BIN)
+            extra_args = []
+
+        args_xml = "\n        ".join(f"<string>{a}</string>" for a in [program] + extra_args)
         plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -50,8 +71,7 @@ def _enable_background():
     <key>Label</key><string>{_PLIST_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{exe}</string>
-        <string>--daemon</string>
+        {args_xml}
     </array>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
@@ -76,6 +96,7 @@ def _disable_background():
     if sys.platform == "darwin":
         subprocess.run(["launchctl", "unload", str(_PLIST_PATH)], capture_output=True)
         _PLIST_PATH.unlink(missing_ok=True)
+        _MAC_DAEMON_BIN.unlink(missing_ok=True)
     elif sys.platform == "win32":
         try:
             import winreg
