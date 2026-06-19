@@ -24,11 +24,14 @@ jobs:
       - name: Build
         run: python build.py
 
+      - name: Zipar .app bundle
+        run: cd dist && zip -r ../ActivityTracker-macOS.zip ActivityTracker.app
+
       - name: Upload artefato macOS
         uses: actions/upload-artifact@v4
         with:
           name: ActivityTracker-macOS
-          path: dist/ActivityTracker.app
+          path: ActivityTracker-macOS.zip
 
   build-windows:
     runs-on: windows-latest
