@@ -164,6 +164,29 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 0.82rem; text-decoration: none; display: inline-block; transition: all .15s; }
   .btn:hover { background: var(--accent); border-color: var(--accent); color: white; }
   .btn-green:hover { background: #10b981; border-color: #10b981; }
+  .btn-icon { background: var(--surface2); border: 1px solid var(--border); color: var(--text2); width: 32px; height: 32px; border-radius: 8px; cursor: pointer; font-size: 1rem; display: flex; align-items: center; justify-content: center; transition: all .15s; }
+  .btn-icon:hover { color: var(--text); border-color: var(--text2); }
+
+  /* Settings panel */
+  .settings-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 500; display: flex; justify-content: flex-end; animation: fadeIn .15s; }
+  .settings-overlay.hidden { display: none; }
+  @keyframes fadeIn { from{opacity:0} to{opacity:1} }
+  .settings-panel { background: var(--bg); width: 340px; height: 100%; overflow-y: auto; display: flex; flex-direction: column; border-left: 1px solid var(--border); }
+  .settings-head { display: flex; align-items: center; justify-content: space-between; padding: 20px 24px; border-bottom: 1px solid var(--border); }
+  .settings-head h2 { font-size: 1rem; font-weight: 700; margin: 0; }
+  .settings-close { background: none; border: none; color: var(--text2); cursor: pointer; font-size: 1.2rem; padding: 4px 6px; border-radius: 6px; }
+  .settings-close:hover { background: var(--surface2); color: var(--text); }
+  .settings-body { flex: 1; padding: 20px 24px; display: flex; flex-direction: column; gap: 12px; }
+  .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 16px; background: var(--surface); border-radius: 10px; border: 1px solid var(--border); }
+  .settings-lbl strong { display: block; font-size: 0.87rem; margin-bottom: 4px; color: var(--text); }
+  .settings-lbl span { font-size: 0.75rem; color: var(--text2); line-height: 1.4; }
+  .settings-info { padding: 14px 16px; background: var(--surface); border-radius: 10px; border: 1px solid var(--border); }
+  .settings-info strong { display: block; font-size: 0.78rem; color: var(--text2); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .05em; }
+  .settings-info span { font-size: 0.76rem; color: var(--text); word-break: break-all; font-family: monospace; }
+  .tog { flex-shrink: 0; width: 42px; height: 24px; background: var(--border); border-radius: 12px; position: relative; cursor: pointer; transition: background .2s; }
+  .tog.on { background: var(--accent); }
+  .tog-knob { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; background: #fff; border-radius: 50%; transition: transform .2s; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+  .tog.on .tog-knob { transform: translateX(18px); }
 
   /* Layout */
   .container { max-width: 1280px; margin: 0 auto; padding: 20px 24px; }
@@ -263,8 +286,31 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="header-actions">
     <button class="btn" onclick="loadData()">&#8635; Atualizar</button>
     <button class="btn btn-green" onclick="exportData()">&#8595; Exportar CSV</button>
+    <button class="btn-icon" onclick="openSettings()" title="Configurações">&#9881;</button>
   </div>
 </header>
+
+<div id="settings-overlay" class="settings-overlay hidden" onclick="if(event.target===this)closeSettings()">
+  <div class="settings-panel">
+    <div class="settings-head">
+      <h2>Configurações</h2>
+      <button class="settings-close" onclick="closeSettings()">&#10005;</button>
+    </div>
+    <div class="settings-body">
+      <div class="settings-row">
+        <div class="settings-lbl">
+          <strong>Rastrear em segundo plano</strong>
+          <span>Inicia automaticamente no login e continua rastreando mesmo com o app fechado</span>
+        </div>
+        <div class="tog" id="tog-bg" onclick="toggleBackground()"><div class="tog-knob"></div></div>
+      </div>
+      <div class="settings-info">
+        <strong>Dados salvos em</strong>
+        <span id="settings-data-dir">—</span>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div class="container">
   <div class="date-nav">
@@ -577,6 +623,31 @@ function _startApp() {
 window.addEventListener('pywebviewready', _startApp);
 // Fallback para modo navegador (pywebviewready nunca dispara no browser)
 setTimeout(_startApp, 300);
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+let _bgEnabled = false;
+
+async function openSettings() {
+  document.getElementById('settings-overlay').classList.remove('hidden');
+  if (typeof pywebview !== 'undefined' && pywebview.api) {
+    const s = await pywebview.api.get_settings();
+    _bgEnabled = s.background_mode || false;
+    const tog = document.getElementById('tog-bg');
+    if (_bgEnabled) tog.classList.add('on'); else tog.classList.remove('on');
+    const dd = document.getElementById('settings-data-dir');
+    if (dd && s.data_dir) dd.textContent = s.data_dir;
+  }
+}
+function closeSettings() {
+  document.getElementById('settings-overlay').classList.add('hidden');
+}
+async function toggleBackground() {
+  if (typeof pywebview === 'undefined' || !pywebview.api) return;
+  _bgEnabled = !_bgEnabled;
+  const tog = document.getElementById('tog-bg');
+  if (_bgEnabled) tog.classList.add('on'); else tog.classList.remove('on');
+  await pywebview.api.save_setting('background_mode', _bgEnabled);
+}
 </script>
 </body>
 </html>

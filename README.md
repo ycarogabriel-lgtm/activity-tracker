@@ -6,93 +6,75 @@ Rastreador automático de atividades para facilitar o apontamento de horas. Regi
 
 ## Download
 
-Baixe a versão mais recente em [**Releases → Actions → Build Activity Tracker**](https://github.com/ycarogabriel-lgtm/activity-tracker/actions):
+Baixe a versão mais recente em [**Releases**](https://github.com/ycarogabriel-lgtm/activity-tracker/releases/latest):
 
 | Sistema | Arquivo |
 |---------|---------|
 | macOS | `ActivityTracker-macOS.zip` → extrair → `ActivityTracker.app` |
-| Windows | `ActivityTracker-Windows.zip` → extrair → `ActivityTracker.exe` |
+| Windows | `ActivityTracker-Windows.exe` |
 
 ---
 
 ## macOS
 
-### Abrir o dashboard
+### Primeira abertura
 
-1. Extraia o zip — você terá `ActivityTracker.app`
-2. Duplo clique para abrir
-3. Se aparecer aviso de segurança: clique com botão direito → **Abrir** → **Abrir**
+Clique com botão direito no `ActivityTracker.app` → **Abrir** → **Abrir**.
 
-O app rastreia e exibe os dados enquanto estiver aberto.
+> Isso é necessário apenas na primeira vez. O macOS exige essa confirmação para apps não assinados pela Apple Store.
 
-### Rodar em background (recomendado)
+### Assinar localmente (elimina o aviso de segurança)
 
-Para rastrear mesmo com o app fechado, instale o daemon como serviço de login:
+Para remover o aviso de vez, rode uma vez no Terminal após extrair o app:
 
 ```bash
-# Na pasta do projeto (código-fonte):
-chmod +x install_mac_daemon.sh
-./install_mac_daemon.sh
+xattr -cr ActivityTracker.app
+codesign --force --deep --sign - ActivityTracker.app
 ```
 
-O tracker passa a iniciar automaticamente no login e fica sempre rodando em segundo plano. Abra o `ActivityTracker.app` apenas quando quiser ver o dashboard.
+Depois abra normalmente com duplo clique.
 
-Para desinstalar:
-```bash
-./install_mac_daemon.sh --uninstall
-```
+### Rastrear em segundo plano
 
-**Onde ficam os dados:** `~/Library/Application Support/ActivityTracker/activity_log.json`
+Acesse **⚙ Configurações** (ícone de engrenagem no canto superior direito do app) e ative **"Rastrear em segundo plano"**.
+
+Com isso o tracker inicia automaticamente no login e continua rodando mesmo com o app fechado. Abra o app sempre que quiser ver o histórico — os dados estarão lá.
+
+**Onde ficam os dados:** `~/Library/Application Support/ActivityTracker/`
 
 ---
 
 ## Windows
 
-### Abrir o dashboard
+Execute `ActivityTracker-Windows.exe`.
 
-1. Extraia o zip — você terá `ActivityTracker.exe`
-2. Execute `ActivityTracker.exe`
-
-### Iniciar automaticamente no login
-
-Execute `REGISTRAR_INICIO_AUTOMATICO.bat` como administrador. O tracker passará a iniciar em segundo plano a cada login via Agendador de Tarefas.
-
-Para iniciar manualmente sem abrir console: execute `INICIAR_SILENCIOSO.vbs`.
-
-**Onde ficam os dados:** mesma pasta do executável (`activity_log.json`)
+Para rastrear em segundo plano, acesse **⚙ Configurações** e ative **"Rastrear em segundo plano"**. O tracker será registrado para iniciar automaticamente no login.
 
 ---
 
-## Navegação no dashboard
+## Navegação
 
-- **‹ ›** — navega entre semanas com dados (pula semanas vazias automaticamente)
+- **‹ ›** — navega entre semanas (pula semanas vazias automaticamente)
 - Dias sem registro ficam desabilitados
-- **Atualizar** — recarrega os dados manualmente
+- **Atualizar** — recarrega os dados
 - **Exportar CSV** — exporta as atividades do dia selecionado (ou todas)
 
 ---
 
-## Rodando pelo código-fonte
+## Build pelo código-fonte
 
 ```bash
-# Instalar dependências
-pip install pywebview psutil
+# Dependências
+pip install pywebview psutil          # macOS
+pip install pywebview psutil pywin32  # Windows
 
-# macOS
-pip install pywebview psutil
+# Rodar em modo desenvolvimento
 python3 start.py
 
-# Windows
-pip install pywebview psutil pywin32
-python start.py
-```
-
-### Build do executável
-
-```bash
+# Gerar executável
 python3 build.py
-# macOS → dist/ActivityTracker.app
-# Windows → dist/ActivityTracker.exe
+# → dist/ActivityTracker.app  (macOS)
+# → dist/ActivityTracker.exe  (Windows)
 ```
 
 Requer `brew install librsvg` no macOS para gerar o ícone.
@@ -102,8 +84,3 @@ Requer `brew install librsvg` no macOS para gerar o ícone.
 ## Dados e privacidade
 
 Todos os dados ficam **localmente** na sua máquina. Nenhuma informação é enviada para a internet.
-
-- macOS: `~/Library/Application Support/ActivityTracker/`
-- Windows: mesma pasta do executável
-
-O arquivo `activity_log.json` mantém os últimos **5.000 registros**.

@@ -14,8 +14,8 @@ import time
 import threading
 from pathlib import Path
 
-# Garante que imports relativos funcionem ao chamar de qualquer diretório
-sys.path.insert(0, str(Path(__file__).parent))
+if not getattr(sys, "frozen", False):
+    sys.path.insert(0, str(Path(__file__).parent))
 
 from reminder import start_reminder_thread
 from tracker import main as tracker_main

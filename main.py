@@ -3,7 +3,11 @@ Entry point para o executável gerado pelo PyInstaller.
 """
 
 import sys
-from start import main as _run
 
 if __name__ == "__main__":
-    _run()
+    if "--daemon" in sys.argv:
+        from daemon import main as _daemon
+        _daemon()
+    else:
+        from start import main as _run
+        _run()

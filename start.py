@@ -2,12 +2,88 @@
 Inicializador do Activity Tracker.
 """
 
+import json
 import subprocess
 import sys
 import threading
 from pathlib import Path
 
 SCRIPT_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+
+# ─── Autostart / background mode ──────────────────────────────────────────────
+
+_PLIST_LABEL = "com.activitytracker"
+_PLIST_PATH  = Path.home() / "Library" / "LaunchAgents" / f"{_PLIST_LABEL}.plist"
+_REG_KEY     = r"Software\Microsoft\Windows\CurrentVersion\Run"
+_REG_NAME    = "ActivityTracker"
+
+
+def _background_enabled() -> bool:
+    if sys.platform == "darwin":
+        return _PLIST_PATH.exists()
+    if sys.platform == "win32":
+        try:
+            import winreg
+            k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, _REG_KEY, 0, winreg.KEY_READ)
+            try:
+                winreg.QueryValueEx(k, _REG_NAME)
+                return True
+            except FileNotFoundError:
+                return False
+            finally:
+                winreg.CloseKey(k)
+        except Exception:
+            return False
+    return False
+
+
+def _enable_background():
+    exe = sys.executable  # path do .app ou .exe
+    if sys.platform == "darwin":
+        plist = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>{_PLIST_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{exe}</string>
+        <string>--daemon</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>/tmp/activity-tracker-daemon.log</string>
+    <key>StandardErrorPath</key><string>/tmp/activity-tracker-daemon-error.log</string>
+</dict>
+</plist>"""
+        _PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _PLIST_PATH.write_text(plist)
+        subprocess.run(["launchctl", "load", str(_PLIST_PATH)], capture_output=True)
+    elif sys.platform == "win32":
+        try:
+            import winreg
+            k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, _REG_KEY, 0, winreg.KEY_SET_VALUE)
+            winreg.SetValueEx(k, _REG_NAME, 0, winreg.REG_SZ, f'"{exe}" --daemon')
+            winreg.CloseKey(k)
+        except Exception as e:
+            print(f"[AVISO] Erro ao habilitar autostart: {e}")
+
+
+def _disable_background():
+    if sys.platform == "darwin":
+        subprocess.run(["launchctl", "unload", str(_PLIST_PATH)], capture_output=True)
+        _PLIST_PATH.unlink(missing_ok=True)
+    elif sys.platform == "win32":
+        try:
+            import winreg
+            k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, _REG_KEY, 0, winreg.KEY_SET_VALUE)
+            try:
+                winreg.DeleteValue(k, _REG_NAME)
+            except FileNotFoundError:
+                pass
+            winreg.CloseKey(k)
+        except Exception as e:
+            print(f"[AVISO] Erro ao desabilitar autostart: {e}")
 
 
 def check_dependencies():
@@ -45,6 +121,22 @@ class AppApi:
     def export_csv(self, date_filter=None):
         from server import export_csv
         return export_csv(date_filter)
+
+    def get_settings(self):
+        from server import SCRIPT_DIR
+        return {
+            "background_mode": _background_enabled(),
+            "data_dir": str(SCRIPT_DIR),
+            "platform": sys.platform,
+        }
+
+    def save_setting(self, key, value):
+        if key == "background_mode":
+            if value:
+                _enable_background()
+            else:
+                _disable_background()
+        return True
 
 
 def main():
