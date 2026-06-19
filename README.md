@@ -8,10 +8,6 @@ Rastreador automático de atividades para facilitar o apontamento de horas. Regi
 
 Baixe a versão mais recente em [**Releases**](https://github.com/ycarogabriel-lgtm/activity-tracker/releases/latest):
 
-| Sistema | Arquivo |
-|---------|---------|
-| macOS | `ActivityTracker-macOS.zip` → extrair → `ActivityTracker.app` |
-| Windows | `ActivityTracker-Windows.exe` |
 
 ---
 
@@ -33,12 +29,18 @@ A partir daí o app abre normalmente com duplo clique.
 
 ### Alternativa via Terminal (abre sem nenhum aviso)
 
+Entre na pasta onde o app está o seu executável pelo Terminal. Se estiver na sua pasta de Downloads, insira o comando:
+
+```bash
+cd ~/downloads
+```
+Logo depois, execute uma vez:
 ```bash
 xattr -cr ActivityTracker.app
 codesign --force --deep --sign - ActivityTracker.app
 ```
 
-Execute uma vez na pasta onde o app está. Depois é só dar duplo clique normalmente.
+Depois é só dar duplo clique normalmente.
 
 ### Rastrear em segundo plano
 
