@@ -35,7 +35,16 @@ if IS_MACOS:
         pass  # psutil não é obrigatório no macOS
 
 # ─── Configurações ────────────────────────────────────────────────────────────
-SCRIPT_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+def _data_dir() -> Path:
+    if not getattr(sys, "frozen", False):
+        return Path(__file__).parent
+    exe = Path(sys.executable)
+    # Dentro de um .app bundle: App.app/Contents/MacOS/App
+    if sys.platform == "darwin" and exe.parent.name == "MacOS":
+        return exe.parent.parent.parent.parent  # diretório que contém o .app
+    return exe.parent
+
+SCRIPT_DIR = _data_dir()
 LOG_FILE  = SCRIPT_DIR / "activity_log.json"
 LOCK_FILE = SCRIPT_DIR / "tracker.lock"
 INTERVAL_SECONDS = 10          # Intervalo de captura (segundos)

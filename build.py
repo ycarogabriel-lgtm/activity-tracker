@@ -72,6 +72,7 @@ def build():
         ]
     elif sys.platform == "darwin":
         cmd += [
+            "--windowed",           # cria .app bundle — abre sem terminal
             "--hidden-import", "objc",
             "--hidden-import", "Foundation",
             "--hidden-import", "WebKit",
@@ -87,7 +88,12 @@ def build():
         print("\n[ERRO] Build falhou. Verifique as mensagens acima.")
         sys.exit(1)
 
-    out = DIST / (f"{NAME}.exe" if sys.platform == "win32" else NAME)
+    if sys.platform == "darwin":
+        out = DIST / f"{NAME}.app"
+    elif sys.platform == "win32":
+        out = DIST / f"{NAME}.exe"
+    else:
+        out = DIST / NAME
 
     print(f"\n{'='*60}")
     print(f"  Build concluído!")

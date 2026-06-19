@@ -12,7 +12,16 @@ from collections import defaultdict
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.parse
 
-SCRIPT_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+def _data_dir() -> Path:
+    if not getattr(sys, "frozen", False):
+        return Path(__file__).parent
+    exe = Path(sys.executable)
+    # Dentro de um .app bundle: App.app/Contents/MacOS/App
+    if sys.platform == "darwin" and exe.parent.name == "MacOS":
+        return exe.parent.parent.parent.parent  # diretório que contém o .app
+    return exe.parent
+
+SCRIPT_DIR = _data_dir()
 LOG_FILE = SCRIPT_DIR / "activity_log.json"
 PORT = int(os.environ.get("PORT", 5000))
 
@@ -621,12 +630,23 @@ def export_csv(date_filter=None):
 
 
 def main():
+    port = PORT
+    server = None
+    for p in range(port, port + 20):
+        try:
+            server = HTTPServer(("0.0.0.0", p), Handler)
+            port = p
+            break
+        except OSError:
+            continue
+    if server is None:
+        print("[AVISO] Servidor web nao disponivel (todas as portas ocupadas).")
+        return
     print("=" * 60)
     print(f"  Activity Tracker - Painel Web")
-    print(f"  Acesse: http://localhost:{PORT}")
+    print(f"  Acesse: http://localhost:{port}")
     print(f"  Pressione Ctrl+C para parar.")
     print("=" * 60)
-    server = HTTPServer(("0.0.0.0", PORT), Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

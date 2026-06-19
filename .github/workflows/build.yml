@@ -28,7 +28,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ActivityTracker-macOS
-          path: dist/ActivityTracker
+          path: dist/ActivityTracker.app
 
   build-windows:
     runs-on: windows-latest
