@@ -36,13 +36,13 @@ if IS_MACOS:
 
 # ─── Configurações ────────────────────────────────────────────────────────────
 def _data_dir() -> Path:
-    if not getattr(sys, "frozen", False):
-        return Path(__file__).parent
-    exe = Path(sys.executable)
-    # Dentro de um .app bundle: App.app/Contents/MacOS/App
-    if sys.platform == "darwin" and exe.parent.name == "MacOS":
-        return exe.parent.parent.parent.parent  # diretório que contém o .app
-    return exe.parent
+    if sys.platform == "darwin":
+        d = Path.home() / "Library" / "Application Support" / "ActivityTracker"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent  # Windows exe
+    return Path(__file__).parent  # modo desenvolvimento
 
 SCRIPT_DIR = _data_dir()
 LOG_FILE  = SCRIPT_DIR / "activity_log.json"

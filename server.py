@@ -13,16 +13,34 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.parse
 
 def _data_dir() -> Path:
-    if not getattr(sys, "frozen", False):
-        return Path(__file__).parent
-    exe = Path(sys.executable)
-    # Dentro de um .app bundle: App.app/Contents/MacOS/App
-    if sys.platform == "darwin" and exe.parent.name == "MacOS":
-        return exe.parent.parent.parent.parent  # diretório que contém o .app
-    return exe.parent
+    if sys.platform == "darwin":
+        # Local padrão de dados no macOS — funciona independente de onde o .app está
+        d = Path.home() / "Library" / "Application Support" / "ActivityTracker"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent  # Windows exe
+    return Path(__file__).parent  # modo desenvolvimento
+
+def _migrate_if_needed(log_file: Path):
+    """Na primeira execução, copia dados de locais anteriores."""
+    if log_file.exists():
+        return
+    for candidate in [
+        Path.home() / "Downloads" / "activity_log.json",
+        Path.home() / "activity_log.json",
+    ]:
+        if candidate.exists():
+            import shutil
+            try:
+                shutil.copy2(candidate, log_file)
+            except Exception:
+                pass
+            break
 
 SCRIPT_DIR = _data_dir()
 LOG_FILE = SCRIPT_DIR / "activity_log.json"
+_migrate_if_needed(LOG_FILE)
 PORT = int(os.environ.get("PORT", 5000))
 
 
