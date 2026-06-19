@@ -36,9 +36,42 @@ if IS_MACOS:
 
 # ─── Configurações ────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
-LOG_FILE = SCRIPT_DIR / "activity_log.json"
+LOG_FILE  = SCRIPT_DIR / "activity_log.json"
+LOCK_FILE = SCRIPT_DIR / "tracker.lock"
 INTERVAL_SECONDS = 10          # Intervalo de captura (segundos)
 MAX_RECORDS = 5000             # Máximo de registros mantidos no JSON
+
+
+def _pid_running(pid: int) -> bool:
+    try:
+        import psutil
+        return psutil.pid_exists(pid)
+    except ImportError:
+        pass
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _acquire_lock() -> bool:
+    if LOCK_FILE.exists():
+        try:
+            pid = int(LOCK_FILE.read_text().strip())
+            if _pid_running(pid):
+                return False
+        except Exception:
+            pass
+    LOCK_FILE.write_text(str(os.getpid()))
+    return True
+
+
+def _release_lock():
+    try:
+        LOCK_FILE.unlink()
+    except Exception:
+        pass
 
 # Navegadores conhecidos — adaptado por plataforma (nomes em minúsculas)
 if IS_MACOS:
@@ -378,6 +411,10 @@ def build_entry(window_info: dict, teams_log: dict) -> dict:
 # ─── Loop principal ───────────────────────────────────────────────────────────
 
 def main():
+    if not _acquire_lock():
+        print("[TRACKER] Já está rodando em outro processo. Saindo.")
+        return
+
     print("=" * 60)
     print("  Activity Tracker - Rastreador de Atividades")
     print("  Pressione Ctrl+C para parar.")
@@ -387,33 +424,36 @@ def main():
     records = load_log()
     print(f"  {len(records)} registros existentes carregados.")
 
-    while True:
-        try:
-            window_info = get_active_window_info()
-            teams_log = read_teams_log()
-            entry = build_entry(window_info, teams_log)
+    try:
+        while True:
+            try:
+                window_info = get_active_window_info()
+                teams_log = read_teams_log()
+                entry = build_entry(window_info, teams_log)
 
-            if should_record(entry, records):
-                records.append(entry)
-                save_log(records)
-                cat_label = {
-                    "teams_meeting": "REUNIÃO Teams",
-                    "teams_chat": "CHAT Teams",
-                    "teams_app": "Teams (app)",
-                    "browser": "Navegador",
-                    "app": "Aplicativo",
-                    "idle": "Ocioso",
-                }.get(entry["category"], entry["category"])
-                print(f"[{entry['time']}] {cat_label}: {entry['detail'] or entry['title'][:60]}")
+                if should_record(entry, records):
+                    records.append(entry)
+                    save_log(records)
+                    cat_label = {
+                        "teams_meeting": "REUNIAO Teams",
+                        "teams_chat": "CHAT Teams",
+                        "teams_app": "Teams (app)",
+                        "browser": "Navegador",
+                        "app": "Aplicativo",
+                        "idle": "Ocioso",
+                    }.get(entry["category"], entry["category"])
+                    print(f"[{entry['time']}] {cat_label}: {entry['detail'] or entry['title'][:60]}")
 
-            time.sleep(INTERVAL_SECONDS)
+                time.sleep(INTERVAL_SECONDS)
 
-        except KeyboardInterrupt:
-            print("\n[INFO] Rastreamento encerrado pelo usuário.")
-            break
-        except Exception as e:
-            print(f"[ERRO] {e}")
-            time.sleep(INTERVAL_SECONDS)
+            except KeyboardInterrupt:
+                print("\n[INFO] Rastreamento encerrado pelo usuario.")
+                break
+            except Exception as e:
+                print(f"[ERRO] {e}")
+                time.sleep(INTERVAL_SECONDS)
+    finally:
+        _release_lock()
 
 
 if __name__ == "__main__":
