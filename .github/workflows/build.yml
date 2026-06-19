@@ -1,0 +1,52 @@
+name: Build Activity Tracker
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar librsvg (renderização do SVG)
+        run: brew install librsvg
+
+      - name: Instalar dependências Python
+        run: pip install pyinstaller pywebview psutil Pillow
+
+      - name: Build
+        run: python build.py
+
+      - name: Upload artefato macOS
+        uses: actions/upload-artifact@v4
+        with:
+          name: ActivityTracker-macOS
+          path: dist/ActivityTracker
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências Python
+        run: pip install pyinstaller pywebview psutil pywin32 Pillow
+
+      - name: Build
+        run: python build.py
+
+      - name: Upload artefato Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: ActivityTracker-Windows
+          path: dist/ActivityTracker.exe

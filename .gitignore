@@ -1,0 +1,12 @@
+dist/
+build/
+*.spec
+__pycache__/
+*.pyc
+.DS_Store
+icon.png
+icon.icns
+icon.ico
+icon.iconset/
+activity_log.json
+.claude/
