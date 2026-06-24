@@ -19,6 +19,8 @@ DIST = Path("dist")
 BUILD = Path("build")
 
 DEPS = ["pyinstaller", "pywebview", "psutil", "Pillow"]
+if sys.platform == "win32":
+    DEPS.append("winotify")
 
 
 def ensure_deps():
@@ -104,6 +106,7 @@ def build():
             "--hidden-import", "win32gui",
             "--hidden-import", "win32process",
             "--hidden-import", "win32api",
+            "--hidden-import", "winotify",
             "--noconsole",
         ]
     elif sys.platform == "darwin":

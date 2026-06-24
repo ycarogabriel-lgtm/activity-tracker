@@ -75,6 +75,12 @@ def _try_winotify(title: str, message: str) -> bool:
         import importlib
         import importlib.util
         if importlib.util.find_spec("winotify") is None:
+            if getattr(sys, "frozen", False):
+                # No executável compilado, sys.executable é o próprio app, não um
+                # interpretador Python — rodar "-m pip install" aqui relançaria o
+                # próprio ActivityTracker.exe (sem o flag --daemon), abrindo uma
+                # janela nova a cada lembrete. Pula direto para o fallback.
+                return False
             subprocess.run(
                 [sys.executable, "-m", "pip", "install", "winotify", "--quiet"],
                 capture_output=True, timeout=30,
