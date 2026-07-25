@@ -39,8 +39,23 @@ def _migrate_if_needed(log_file: Path):
                 pass
             break
 
+def _vendor_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    else:
+        base = Path(__file__).parent
+    return base / "vendor"
+
+
+VENDOR_DIR = _vendor_dir()
+
 SCRIPT_DIR = _data_dir()
 LOG_FILE = SCRIPT_DIR / "activity_log.json"
+SESSIONS_FILE = SCRIPT_DIR / "activity_sessions.jsonl"
+ACTIVE_SESSIONS_FILE = SCRIPT_DIR / "active_sessions.json"
+JIRA_CODES_FILE = SCRIPT_DIR / "jira_codes.json"
+JIRA_LABEL_CODES_FILE = SCRIPT_DIR / "jira_label_codes.json"
+DELETED_SESSIONS_FILE = SCRIPT_DIR / "deleted_sessions.json"
 _migrate_if_needed(LOG_FILE)
 PORT = int(os.environ.get("PORT", 5000))
 
@@ -112,6 +127,169 @@ def summarize_day(day_records):
     }
 
 
+def summarize_day_from_sessions(sessions: list) -> dict:
+    """Mesmo formato de summarize_day(), mas calculado a partir do motor novo
+    de sessões. Usado como fonte ÚNICA dos cards de resumo/gráfico por hora
+    sempre que há dados de sessão para o dia — evita ter dois pipelines de
+    captura (log antigo vs sessões) que podem divergir no que mostram."""
+    totals = defaultdict(int)
+    details_map = defaultdict(lambda: defaultdict(int))
+    hourly = defaultdict(int)
+
+    for s in sessions:
+        cat = s.get("category", "app")
+        dur = s.get("total_seconds", 0)
+        totals[cat] += dur
+        detail = s.get("detail") or s.get("process", "")
+        if detail:
+            details_map[cat][detail] += dur
+
+        try:
+            start = datetime.fromisoformat(s["start"])
+            end = datetime.fromisoformat(s["end"])
+        except Exception:
+            continue
+        cur = start
+        while cur < end:
+            hour_end = cur.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            seg_end = min(end, hour_end)
+            secs = (seg_end - cur).total_seconds()
+            if cat != "idle":
+                hourly[cur.hour] += int(secs)
+            cur = seg_end
+
+    return {
+        "totals": dict(totals),
+        "details": {k: dict(v) for k, v in details_map.items()},
+        "hourly": dict(hourly),
+    }
+
+
+def load_deleted_sessions() -> set:
+    if DELETED_SESSIONS_FILE.exists():
+        try:
+            with open(DELETED_SESSIONS_FILE, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+        except Exception:
+            pass
+    return set()
+
+
+def delete_sessions(session_ids: list):
+    """'Exclui' sessões marcando o id numa lista de exclusão — o JSONL de
+    sessões é append-only, então não reescrevemos ele; só filtramos na leitura."""
+    deleted = load_deleted_sessions()
+    deleted.update(session_ids)
+    with open(DELETED_SESSIONS_FILE, "w", encoding="utf-8") as f:
+        json.dump(sorted(deleted), f, ensure_ascii=False, indent=2)
+
+
+def load_sessions() -> list:
+    """Lê as sessões do motor novo: fechadas (JSONL) + as que ainda estão abertas
+    (checkpoint), descontando as marcadas como excluídas."""
+    sessions = []
+    if SESSIONS_FILE.exists():
+        try:
+            with open(SESSIONS_FILE, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        sessions.append(json.loads(line))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    if ACTIVE_SESSIONS_FILE.exists():
+        try:
+            with open(ACTIVE_SESSIONS_FILE, "r", encoding="utf-8") as f:
+                sessions.extend(json.load(f))
+        except Exception:
+            pass
+    deleted = load_deleted_sessions()
+    if deleted:
+        sessions = [s for s in sessions if s.get("id") not in deleted]
+    return sessions
+
+
+def load_jira_codes() -> dict:
+    if JIRA_CODES_FILE.exists():
+        try:
+            with open(JIRA_CODES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def load_jira_label_codes() -> dict:
+    """Códigos 'padrão' por rótulo (processo+categoria+detalhe) — aplicados
+    automaticamente a toda sessão, passada ou futura, com aquele mesmo nome."""
+    if JIRA_LABEL_CODES_FILE.exists():
+        try:
+            with open(JIRA_LABEL_CODES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def session_label_key(s: dict) -> str:
+    return f'{s.get("process","")}::{s.get("category","")}::{s.get("detail","")}'
+
+
+def assign_jira_code(session_ids: list, code: str):
+    """Atribui (ou remove, se code vazio) um código Jira/Tempo a uma lista de
+    sessões pelo id. Guardado à parte do JSONL de sessões (que é append-only),
+    num mapa pequeno id -> código, barato de reescrever."""
+    codes = load_jira_codes()
+    now = datetime.now().isoformat(timespec="seconds")
+    for sid in session_ids:
+        if code:
+            codes[sid] = {"code": code, "assigned_at": now}
+        else:
+            codes.pop(sid, None)
+    with open(JIRA_CODES_FILE, "w", encoding="utf-8") as f:
+        json.dump(codes, f, ensure_ascii=False, indent=2)
+
+
+def set_jira_label_code(label_key: str, code: str):
+    """Define (ou remove) o código padrão para todas as sessões — passadas e
+    futuras — que compartilham o mesmo processo+categoria+detalhe."""
+    codes = load_jira_label_codes()
+    now = datetime.now().isoformat(timespec="seconds")
+    if code:
+        codes[label_key] = {"code": code, "assigned_at": now}
+    else:
+        codes.pop(label_key, None)
+    with open(JIRA_LABEL_CODES_FILE, "w", encoding="utf-8") as f:
+        json.dump(codes, f, ensure_ascii=False, indent=2)
+
+
+def get_sessions_by_date(date_filter=None) -> dict:
+    sessions = load_sessions()
+    codes = load_jira_codes()
+    label_codes = load_jira_label_codes()
+    for s in sessions:
+        c = codes.get(s.get("id"))
+        if c:
+            s["jira_code"] = c["code"]
+        else:
+            lc = label_codes.get(session_label_key(s))
+            s["jira_code"] = lc["code"] if lc else None
+    if date_filter:
+        sessions = [s for s in sessions if s.get("date") == date_filter]
+    grouped = defaultdict(list)
+    for s in sessions:
+        grouped[s.get("date", "")].append(s)
+    result = {}
+    for d, sess_list in grouped.items():
+        sess_list.sort(key=lambda s: s.get("start", ""))
+        result[d] = sess_list
+    return result
+
+
 def get_api_data(date_filter=None):
     records = load_records()
     enriched = compute_durations(records)
@@ -120,12 +298,20 @@ def get_api_data(date_filter=None):
         enriched = [r for r in enriched if r.get("date") == date_filter]
 
     grouped = group_by_date(enriched)
+    sessions_by_date = get_sessions_by_date(date_filter)
+
     result = {}
-    for d, recs in grouped.items():
-        summary = summarize_day(recs)
+    for d in set(grouped.keys()) | set(sessions_by_date.keys()):
+        recs = grouped.get(d, [])
+        day_sessions = sessions_by_date.get(d, [])
+        # Fonte única de verdade: se o dia já tem dados do motor novo, o resumo
+        # e o gráfico por hora vêm SÓ dele (mesmo dado do calendário). O log
+        # antigo só é usado como fallback pra dias anteriores à migração.
+        summary = summarize_day_from_sessions(day_sessions) if day_sessions else summarize_day(recs)
         result[d] = {
             "records": recs,
             "summary": summary,
+            "sessions": day_sessions,
         }
     return result
 
@@ -165,6 +351,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 0.82rem; text-decoration: none; display: inline-block; transition: all .15s; }
   .btn:hover { background: var(--accent); border-color: var(--accent); color: white; }
   .btn-green:hover { background: #10b981; border-color: #10b981; }
+  .btn-danger { background: transparent; border: 1px solid #ef4444; color: #ef4444; width: 100%; padding: 10px; text-align: center; font-size: 0.8rem; }
+  .btn-danger:hover { background: #ef4444; border-color: #ef4444; color: #fff; }
+  .settings-danger { margin-top: auto; padding-top: 16px; border-top: 1px solid var(--border); }
   .btn-icon { background: var(--surface2); border: 1px solid var(--border); color: var(--text2); width: 32px; height: 32px; border-radius: 8px; cursor: pointer; font-size: 1rem; display: flex; align-items: center; justify-content: center; transition: all .15s; }
   .btn-icon:hover { color: var(--text); border-color: var(--text2); }
 
@@ -242,13 +431,36 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .chart-bar { width: 100%; border-radius: 3px 3px 0 0; background: var(--accent); opacity: 0.8; min-height: 2px; transition: height .3s; }
   .chart-label { font-size: 0.6rem; color: var(--text2); }
 
-  /* Timeline */
-  .timeline { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-  .timeline-header { padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 0.75rem; font-weight: 600; display: grid; grid-template-columns: 52px 130px 1fr 62px; gap: 8px; color: var(--text2); text-transform: uppercase; letter-spacing: .04em; }
-  .timeline-row { padding: 9px 16px; border-bottom: 1px solid var(--border); font-size: 0.82rem; display: grid; grid-template-columns: 52px 130px 1fr 62px; gap: 8px; align-items: center; transition: background .1s; }
-  .timeline-row:last-child { border-bottom: none; }
-  .timeline-row:hover { background: var(--surface2); }
-  .time-col { color: var(--text2); font-family: monospace; font-size: 0.78rem; }
+  /* Timeline de sessões (multi-janela, primeiro + segundo plano) */
+  .sess-panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; flex-wrap: wrap; gap: 8px; }
+  .sess-axis { position: relative; height: 16px; margin: 0 0 6px 222px; border-bottom: 1px solid var(--border); }
+  .sess-axis-tick { position: absolute; transform: translateX(-50%); font-size: 0.62rem; color: var(--text2); }
+  .sess-rows { display: flex; flex-direction: column; gap: 6px; max-height: 380px; overflow-y: auto; }
+  .sess-row { display: grid; grid-template-columns: 22px 190px 1fr 60px; gap: 6px; align-items: center; }
+  .sess-row.no-select { grid-template-columns: 0px 190px 1fr 60px; }
+  .sess-row.no-select .sess-checkbox { visibility: hidden; pointer-events: none; }
+  .sess-row:hover .sess-row-label { color: var(--accent); }
+  .sess-checkbox { width: 15px; height: 15px; cursor: pointer; }
+  .sess-row-label { font-size: 0.76rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; transition: color .1s; }
+  .sess-track { position: relative; height: 20px; background: var(--surface2); border-radius: 5px; overflow: hidden; }
+  .sess-bar { position: absolute; top: 0; bottom: 0; opacity: 0.32; border-radius: 4px; }
+  .sess-fg { position: absolute; top: 0; bottom: 0; opacity: 1; }
+  .sess-row-total { font-size: 0.76rem; text-align: right; color: var(--text2); font-family: monospace; }
+  .sess-code-badge { display: inline-block; background: rgba(59,130,246,.18); color: var(--accent); font-size: 0.62rem; font-weight: 700; padding: 1px 6px; border-radius: 999px; margin-left: 6px; flex-shrink: 0; }
+  .sess-selection-bar { display: none; align-items: center; gap: 10px; background: var(--surface2); border: 1px solid var(--accent); border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; font-size: 0.78rem; flex-wrap: wrap; }
+  @media(max-width:700px){ .sess-row{grid-template-columns:18px 110px 1fr 46px;} .sess-axis{margin-left:150px;} }
+  .settings-field { width: 100%; box-sizing: border-box; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 8px; font-size: 0.78rem; margin-top: 6px; font-family: inherit; }
+
+  /* Modal de detalhe da atividade (clique numa sessão) */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 600; display: flex; align-items: center; justify-content: center; padding: 20px; animation: fadeIn .15s; }
+  .modal-overlay.hidden { display: none; }
+  .modal-card { position: relative; background: var(--bg); border: 1px solid var(--border); border-radius: 14px; width: 420px; max-width: 100%; max-height: 86vh; overflow-y: auto; padding: 22px 22px 20px; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+  .modal-title { font-size: 1rem; font-weight: 700; margin-right: 24px; margin-bottom: 8px; }
+  .modal-sub { font-size: 0.76rem; color: var(--text2); line-height: 1.6; margin-bottom: 16px; }
+  .modal-label { display: block; font-size: 0.72rem; color: var(--text2); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 2px; margin-top: 4px; }
+  .modal-actions { display: flex; gap: 8px; margin-top: 10px; }
+  .modal-actions .btn { flex: 1; }
+
   .cat-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
   .badge-teams_meeting { background: rgba(139,92,246,.18); color: var(--meeting); }
   .badge-teams_chat { background: rgba(6,182,212,.18); color: var(--chat); }
@@ -256,17 +468,19 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .badge-browser { background: rgba(16,185,129,.18); color: var(--browser); }
   .badge-app { background: rgba(245,158,11,.18); color: var(--app); }
   .badge-idle { background: rgba(71,85,105,.18); color: var(--idle); }
-  .detail-col { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .dur-col { color: var(--text2); font-family: monospace; font-size: 0.78rem; text-align: right; }
-  @media(max-width:600px){ .timeline-header,.timeline-row{grid-template-columns:52px 110px 1fr;} .dur-col{display:none;} }
-
-  /* Search */
-  .search-wrap { margin-bottom: 12px; }
-  .search-input { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 7px 14px; border-radius: 8px; font-size: 0.85rem; width: 280px; outline: none; }
-  .search-input:focus { border-color: var(--accent); }
 
   .empty { text-align: center; padding: 48px; color: var(--text2); }
-  .section-title { font-size: 0.82rem; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 12px; }
+
+  /* Calendário semanal (FullCalendar vendorizado, tematizado) */
+  #week-calendar { --fc-border-color: var(--border); --fc-page-bg-color: transparent; --fc-neutral-bg-color: var(--surface2); --fc-list-event-hover-bg-color: var(--surface2); --fc-today-bg-color: rgba(59,130,246,.08); --fc-event-bg-color: var(--accent); --fc-event-border-color: transparent; color: var(--text); font-family: inherit; }
+  #week-calendar .fc-col-header-cell-cushion, #week-calendar .fc-timegrid-slot-label-cushion, #week-calendar .fc-timegrid-axis-cushion { color: var(--text2); font-size: 0.7rem; text-decoration: none; }
+  #week-calendar a { color: var(--text); text-decoration: none; }
+  #week-calendar .fc-scrollgrid, #week-calendar table { border-color: var(--border) !important; }
+  #week-calendar .fc-timegrid-slot, #week-calendar .fc-timegrid-col { border-color: var(--border); }
+  .fc-sess-event { position: relative; height: 100%; width: 100%; border-radius: 4px; overflow: hidden; padding: 1px 4px; font-size: 0.65rem; color: #fff; cursor: pointer; }
+  .fc-sess-bg { position: absolute; inset: 0; opacity: 0.38; }
+  .fc-sess-fg { position: absolute; left: 0; right: 0; opacity: 1; }
+  .fc-sess-label { position: relative; z-index: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
 </head>
 <body>
@@ -316,7 +530,35 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <strong>Arquivo de dados</strong>
         <span id="settings-data-dir">—</span>
       </div>
+      <div class="settings-info">
+        <strong>Apps ignorados no rastreamento em segundo plano</strong>
+        <textarea id="settings-ignored" rows="2" placeholder="Ex: Spotify, WhatsApp, Mensagens"
+          style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px;font-size:0.78rem;margin-top:6px;resize:vertical;font-family:inherit;"></textarea>
+        <button class="btn" style="margin-top:8px;" onclick="saveIgnored()">Salvar</button>
+      </div>
+      <div class="settings-info">
+        <strong>Integração Jira / Tempo</strong>
+        <input id="jira-url" class="settings-field" placeholder="URL do Jira (ex: https://suaempresa.atlassian.net)">
+        <input id="jira-email" class="settings-field" placeholder="Seu e-mail do Jira">
+        <input id="jira-token" class="settings-field" type="password" placeholder="API token do Jira">
+        <input id="tempo-token" class="settings-field" type="password" placeholder="API token do Tempo">
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <button class="btn" onclick="saveJiraConfig()">Salvar</button>
+          <button class="btn" onclick="testJiraConnection()">Testar conexão</button>
+        </div>
+        <span id="jira-status" style="display:block;margin-top:6px;font-size:0.72rem;color:var(--text2);"></span>
+      </div>
+      <div class="settings-danger">
+        <button class="btn btn-danger" onclick="uninstallApp()">Desinstalar Activity Tracker</button>
+      </div>
     </div>
+  </div>
+</div>
+
+<div id="session-modal-overlay" class="modal-overlay hidden" onclick="if(event.target===this)closeSessionModal()">
+  <div class="modal-card">
+    <button class="settings-close" style="position:absolute;top:14px;right:14px;" onclick="closeSessionModal()">&#10005;</button>
+    <div id="modal-body"></div>
   </div>
 </div>
 
@@ -327,14 +569,20 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <button class="week-nav-btn" id="btn-next-week" onclick="shiftWeek(1)" title="Próxima semana com dados">&#8250;</button>
   </div>
   <div id="week-range" class="week-range"></div>
+
+  <div class="panel" id="week-calendar-panel" style="margin-bottom:20px;">
+    <div class="panel-title">Calendário do dia (clique numa atividade pra ver detalhes)</div>
+    <div id="week-calendar"></div>
+  </div>
+
   <div id="content"><div class="empty">Carregando dados...</div></div>
 </div>
 
+<script src="/vendor/fullcalendar.min.js"></script>
 <script>
 let allData = {};
 let selectedDate = null;
 let currentWeekStart = null;
-let searchQuery = '';
 
 const DAY_NAMES = ['DOM', 'SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB'];
 
@@ -351,14 +599,6 @@ function addDays(dateStr, n) {
   return d.toISOString().slice(0, 10);
 }
 
-const CAT_LABELS = {
-  teams_meeting: 'Reunião Teams',
-  teams_chat: 'Chat Teams',
-  teams_app: 'Teams',
-  browser: 'Navegador',
-  app: 'Aplicativo',
-  idle: 'Ocioso',
-};
 const CAT_ICONS = {
   teams_meeting: '&#128249;',
   teams_chat: '&#128172;',
@@ -383,11 +623,6 @@ function fmtDur(s) {
   if (h > 0) return h + 'h ' + String(m).padStart(2,'0') + 'm';
   if (m > 0) return m + 'm';
   return s + 's';
-}
-
-function fmtTime(ts) {
-  if (!ts) return '';
-  return ts.slice(11, 16);
 }
 
 function esc(s) {
@@ -443,6 +678,7 @@ function renderDateNav(dates) {
     const atCurrent = currentWeekStart >= getWeekStart(today);
     nextBtn.disabled = atCurrent;
   }
+  updateWeekCalendar();
 }
 
 function selectDate(d) {
@@ -495,7 +731,7 @@ function renderDay(d) {
     document.getElementById('content').innerHTML = '<div class="empty">Nenhum registro para este dia.</div>';
     return;
   }
-  const { records, summary } = day;
+  const { summary } = day;
   const totals = summary.totals || {};
   const hourly = summary.hourly || {};
   const totalActive = Object.entries(totals).filter(([k]) => k !== 'idle').reduce((a,[,v]) => a+v, 0);
@@ -533,53 +769,239 @@ function renderDay(d) {
   }
   html += '</div></div>';
 
+  // ── Timeline por sessão (motor novo: primeiro + segundo plano) ──────────────
+  html += renderSessionsTimeline(d, day.sessions || []);
+
   // ── Top listas ─────────────────────────────────────────────────────────────
   html += '<div class="two-col">';
   html += renderTopPanel('Reuniões & Chats Teams', summary.details, ['teams_meeting','teams_chat'], '#8b5cf6', '#06b6d4');
   html += renderTopPanel('Navegador & Aplicativos', summary.details, ['browser','app'], '#10b981', '#f59e0b');
   html += '</div>';
 
-  // ── Timeline ───────────────────────────────────────────────────────────────
-  html += '<div class="section-title">Linha do tempo</div>';
-  html += '<div class="search-wrap"><input class="search-input" type="text" placeholder="Filtrar por detalhe ou categoria..." id="search-input" oninput="filterTimeline()" value="' + esc(searchQuery) + '"></div>';
-  html += '<div class="timeline" id="timeline-table">';
-  html += '<div class="timeline-header"><span>Hora</span><span>Categoria</span><span>Detalhe</span><span style="text-align:right">Duração</span></div>';
-  html += '<div id="timeline-rows">';
-  html += buildTimelineRows([...records].reverse(), searchQuery);
-  html += '</div></div>';
-
   document.getElementById('content').innerHTML = html;
 }
 
-function buildTimelineRows(rows, query) {
-  let html = '';
-  const q = (query || '').toLowerCase();
-  for (const r of rows) {
-    const cat = r.category || 'app';
-    const label = CAT_LABELS[cat] || cat;
-    const icon = CAT_ICONS[cat] || '';
-    const detail = r.detail || r.title || '';
-    const dur = fmtDur(r.duration_seconds);
-    if (q && !detail.toLowerCase().includes(q) && !label.toLowerCase().includes(q)) continue;
-    html += `<div class="timeline-row">
-      <span class="time-col">${fmtTime(r.timestamp)}</span>
-      <span><span class="cat-badge badge-${cat}">${icon} ${label}</span></span>
-      <span class="detail-col" title="${esc(detail)}">${esc(detail.slice(0,90))}</span>
-      <span class="dur-col">${dur}</span>
-    </div>`;
-  }
-  if (!html) html = '<div class="empty" style="padding:24px">Nenhum resultado encontrado.</div>';
-  return html;
+function timeToSeconds(iso) {
+  // iso no formato '...T09:03:10'
+  const t = iso.slice(11, 19).split(':').map(Number);
+  return t[0] * 3600 + t[1] * 60 + (t[2] || 0);
 }
 
-function filterTimeline() {
-  const input = document.getElementById('search-input');
-  searchQuery = input ? input.value : '';
-  const day = allData[selectedDate];
-  if (!day) return;
-  const rows = [...day.records].reverse();
-  const container = document.getElementById('timeline-rows');
-  if (container) container.innerHTML = buildTimelineRows(rows, searchQuery);
+let sessSelectMode = false;
+let sessSelectedRows = new Set();
+let sessRowsData = new Map();
+let currentModalRow = null;
+
+function renderSessionsTimeline(dateStr, sessions) {
+  sessRowsData = new Map();
+
+  if (!sessions || sessions.length === 0) {
+    return '<div class="panel" style="margin-bottom:20px"><div class="panel-title">Linha do tempo por sessão (opacidade = tempo em foco)</div>' +
+      '<div style="color:var(--text2);font-size:.82rem;padding:6px 0">Nenhuma sessão do motor novo registrada ainda para este dia.</div></div>';
+  }
+
+  let minSec = Infinity, maxSec = -Infinity;
+  for (const s of sessions) {
+    minSec = Math.min(minSec, timeToSeconds(s.start));
+    maxSec = Math.max(maxSec, timeToSeconds(s.end));
+  }
+  minSec = Math.max(0, Math.floor(minSec / 3600) * 3600 - 3600);
+  maxSec = Math.min(86400, Math.ceil(maxSec / 3600) * 3600 + 3600);
+  const totalSpan = Math.max(maxSec - minSec, 3600);
+  const pct = (sec) => ((sec - minSec) / totalSpan) * 100;
+
+  const rows = new Map();
+  for (const s of sessions) {
+    const key = s.process + '::' + s.category + '::' + s.detail;
+    if (!rows.has(key)) rows.set(key, { key, process: s.process, category: s.category, detail: s.detail, total: 0, items: [], code: null });
+    const row = rows.get(key);
+    row.total += s.total_seconds || 0;
+    row.items.push(s);
+    if (s.jira_code) row.code = s.jira_code;
+  }
+  const rowList = Array.from(rows.values()).sort((a, b) => b.total - a.total);
+  for (const row of rowList) sessRowsData.set(row.key, row);
+
+  let axisHtml = '<div class="sess-axis">';
+  for (let h = Math.ceil(minSec / 3600); h <= Math.floor(maxSec / 3600); h++) {
+    axisHtml += `<span class="sess-axis-tick" style="left:${pct(h * 3600)}%">${h}h</span>`;
+  }
+  axisHtml += '</div>';
+
+  let rowsHtml = '';
+  for (const row of rowList) {
+    const color = CAT_COLORS[row.category] || '#64748b';
+    let barsHtml = '';
+    for (const s of row.items) {
+      const barLeft = pct(timeToSeconds(s.start));
+      const barWidth = Math.max(pct(timeToSeconds(s.end)) - barLeft, 0.15);
+      let fgHtml = '';
+      for (const range of (s.foreground_ranges || [])) {
+        const fLeftAbs = pct(timeToSeconds(range[0]));
+        const fRightAbs = pct(timeToSeconds(range[1]));
+        const fLeft = fLeftAbs - barLeft;
+        const fWidth = Math.max(fRightAbs - fLeftAbs, 0.08);
+        fgHtml += `<div class="sess-fg" style="left:${fLeft}%;width:${fWidth}%;background:${color}"></div>`;
+      }
+      const tip = `${row.detail || row.process} — ${fmtDur(s.total_seconds)} aberto, ${fmtDur(s.foreground_seconds)} em foco`;
+      barsHtml += `<div class="sess-bar" style="left:${barLeft}%;width:${barWidth}%;background:${color}" title="${esc(tip)}">${fgHtml}</div>`;
+    }
+    const label = row.detail || row.process || '—';
+    const checked = sessSelectedRows.has(row.key) ? 'checked' : '';
+    const codeBadge = row.code ? `<span class="sess-code-badge">${esc(row.code)}</span>` : '';
+    rowsHtml += `<div class="sess-row ${sessSelectMode ? '' : 'no-select'}" style="cursor:pointer" onclick="if(!sessSelectMode) openSessionModal('${row.key}')">
+      <input type="checkbox" class="sess-checkbox" ${checked} onclick="event.stopPropagation()" onchange="toggleRowSelect('${row.key}')">
+      <div class="sess-row-label" title="${esc(label)}"><span class="cat-badge badge-${row.category}" style="margin-right:6px">${CAT_ICONS[row.category] || ''}</span>${esc(label.slice(0, 30))}${codeBadge}</div>
+      <div class="sess-track">${barsHtml}</div>
+      <div class="sess-row-total">${fmtDur(row.total)}</div>
+    </div>`;
+  }
+
+  return `<div class="panel" style="margin-bottom:20px">
+    <div class="sess-panel-head">
+      <div class="panel-title" style="margin-bottom:0">Linha do tempo por sessão (opacidade = tempo em foco)</div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn" onclick="toggleSessSelectMode()">${sessSelectMode ? 'Cancelar seleção' : 'Selecionar vários'}</button>
+        <button class="btn" onclick="exportSessionsData()">&#8595; Exportar sessões</button>
+      </div>
+    </div>
+    <div class="sess-selection-bar" id="sess-selection-bar">
+      <span id="sess-selection-count"></span>
+      <button class="btn" onclick="openMultiSessionModal()">Abrir selecionados</button>
+    </div>
+    ${axisHtml}
+    <div class="sess-rows">${rowsHtml}</div>
+  </div>`;
+}
+
+function toggleSessSelectMode() {
+  sessSelectMode = !sessSelectMode;
+  sessSelectedRows.clear();
+  renderDay(selectedDate);
+}
+
+function toggleRowSelect(rowKey) {
+  if (sessSelectedRows.has(rowKey)) sessSelectedRows.delete(rowKey); else sessSelectedRows.add(rowKey);
+  updateSessSelectionBar();
+}
+
+function updateSessSelectionBar() {
+  const bar = document.getElementById('sess-selection-bar');
+  if (!bar) return;
+  if (sessSelectedRows.size === 0) { bar.style.display = 'none'; return; }
+  let totalSecs = 0;
+  for (const key of sessSelectedRows) totalSecs += sessRowsData.get(key)?.total || 0;
+  bar.style.display = 'flex';
+  document.getElementById('sess-selection-count').textContent = `${sessSelectedRows.size} selecionado(s) — ${fmtDur(totalSecs)}`;
+}
+
+// ── Modal de detalhe da sessão ──────────────────────────────────────────────
+
+function openSessionModal(rowKey) {
+  const row = sessRowsData.get(rowKey);
+  if (row) renderSessionModal(row);
+}
+
+function openMultiSessionModal() {
+  if (sessSelectedRows.size === 0) return;
+  let items = [], total = 0;
+  for (const key of sessSelectedRows) {
+    const r = sessRowsData.get(key);
+    if (!r) continue;
+    items.push(...r.items);
+    total += r.total;
+  }
+  renderSessionModal({ key: null, process: '', category: 'app', detail: `${sessSelectedRows.size} atividades selecionadas`, total, items, code: null });
+}
+
+function renderSessionModal(row) {
+  currentModalRow = row;
+  const label = row.detail || row.process || '—';
+  const totalMin = Math.max(Math.round(row.total / 60), 1);
+  const occurrences = [...row.items].sort((a, b) => a.start.localeCompare(b.start));
+  const occHtml = occurrences.map(s =>
+    `${s.start.slice(11, 16)}–${s.end.slice(11, 16)} — ${fmtDur(s.total_seconds)} aberto, ${fmtDur(s.foreground_seconds)} em foco`
+  ).join('<br>');
+  const applyLabelRow = row.key ? `
+    <label style="display:flex;align-items:flex-start;gap:6px;margin-top:8px;font-size:0.76rem;color:var(--text2);cursor:pointer;">
+      <input type="checkbox" id="modal-apply-label" style="margin-top:2px;">
+      <span>Usar esse código sempre que aparecer "<strong style="color:var(--text)">${esc(label.slice(0, 40))}</strong>" (inclusive em dias futuros)</span>
+    </label>` : '';
+
+  document.getElementById('modal-body').innerHTML = `
+    <div class="modal-title">${esc(label)}</div>
+    <div class="modal-sub">${occurrences.length} ocorrência(s) — ${fmtDur(row.total)} no total<br>${occHtml}</div>
+
+    <label class="modal-label">Código Jira / Tempo</label>
+    <input id="modal-code" class="settings-field" value="${esc(row.code || '')}" placeholder="Ex: PROJ-123">
+    ${applyLabelRow}
+    <div class="modal-actions">
+      <button class="btn" onclick="saveModalCode()">Salvar código</button>
+      <button class="btn" style="border-color:#ef4444;color:#ef4444;" onclick="deleteModalSessions()">Excluir</button>
+    </div>
+
+    <hr style="border:none;border-top:1px solid var(--border);margin:16px 0;">
+
+    <label class="modal-label">Enviar apontamento pro Tempo</label>
+    <div style="display:flex;gap:8px;">
+      <input id="modal-send-code" class="settings-field" style="flex:2" placeholder="Issue (ex: PROJ-123)" value="${esc(row.code || '')}">
+      <input id="modal-send-minutes" class="settings-field" style="flex:1" type="number" min="1" value="${totalMin}">
+    </div>
+    <button class="btn btn-green" style="margin-top:8px;width:100%;" onclick="sendModalWorklog()">Enviar pro Tempo</button>
+    <div id="modal-status" style="margin-top:8px;font-size:0.76rem;color:var(--text2);"></div>
+  `;
+  document.getElementById('session-modal-overlay').classList.remove('hidden');
+}
+
+function closeSessionModal() {
+  document.getElementById('session-modal-overlay').classList.add('hidden');
+  currentModalRow = null;
+}
+
+async function saveModalCode() {
+  if (!currentModalRow) return;
+  const statusEl = document.getElementById('modal-status');
+  if (typeof pywebview === 'undefined' || !pywebview.api) { statusEl.textContent = 'Disponível só no aplicativo desktop.'; return; }
+  const code = document.getElementById('modal-code').value.trim();
+  const applyLabelEl = document.getElementById('modal-apply-label');
+  const applyToLabel = applyLabelEl ? applyLabelEl.checked : false;
+  await pywebview.api.assign_jira_code(currentModalRow.items.map(i => i.id), code, applyToLabel, currentModalRow.key);
+  closeSessionModal();
+  sessSelectedRows.clear();
+  loadData();
+}
+
+async function deleteModalSessions() {
+  if (!currentModalRow) return;
+  const label = currentModalRow.detail || currentModalRow.process;
+  if (!confirm(`Excluir "${label}" (${currentModalRow.items.length} ocorrência(s))? Essa ação não pode ser desfeita.`)) return;
+  if (typeof pywebview === 'undefined' || !pywebview.api) { alert('Disponível só no aplicativo desktop.'); return; }
+  await pywebview.api.delete_sessions(currentModalRow.items.map(i => i.id));
+  closeSessionModal();
+  sessSelectedRows.clear();
+  loadData();
+}
+
+async function sendModalWorklog() {
+  if (!currentModalRow) return;
+  const statusEl = document.getElementById('modal-status');
+  const code = document.getElementById('modal-send-code').value.trim();
+  const minutes = parseFloat(document.getElementById('modal-send-minutes').value.replace(',', '.'));
+  if (!code || !minutes || minutes <= 0) { statusEl.textContent = 'Preencha o código da issue e uma duração válida.'; return; }
+  if (typeof pywebview === 'undefined' || !pywebview.api) { statusEl.textContent = 'Disponível só no aplicativo desktop.'; return; }
+  statusEl.textContent = 'Enviando...';
+  const seconds = Math.round(minutes * 60);
+  const r = await pywebview.api.send_worklog(currentModalRow.items.map(i => i.id), code, selectedDate, seconds, '');
+  statusEl.textContent = r.ok ? 'Apontamento enviado ao Tempo!' : ('Erro: ' + r.error);
+  if (r.ok) { sessSelectedRows.clear(); loadData(); }
+}
+
+async function exportSessionsData() {
+  if (typeof pywebview !== 'undefined' && pywebview.api) {
+    await pywebview.api.export_sessions_csv(selectedDate || null);
+  } else {
+    window.location.href = '/export/sessions-csv' + (selectedDate ? '?date=' + selectedDate : '');
+  }
 }
 
 function renderTopPanel(title, details, cats, color1, color2) {
@@ -611,11 +1033,81 @@ function renderTopPanel(title, details, cats, color1, color2) {
   return html;
 }
 
+// ── Calendário semanal (FullCalendar) ───────────────────────────────────────
+let weekCalendar = null;
+
+function initWeekCalendar() {
+  if (weekCalendar || typeof FullCalendar === 'undefined') return;
+  weekCalendar = new FullCalendar.Calendar(document.getElementById('week-calendar'), {
+    initialView: 'timeGridDay',
+    headerToolbar: false,
+    firstDay: 1,
+    slotMinTime: '06:00:00',
+    slotMaxTime: '22:00:00',
+    slotLabelFormat: { hour: '2-digit', minute: '2-digit', hour12: false },
+    height: 480,
+    nowIndicator: true,
+    allDaySlot: false,
+    dayHeaderContent: (arg) => {
+      const day = String(arg.date.getDate()).padStart(2, '0');
+      const month = String(arg.date.getMonth() + 1).padStart(2, '0');
+      return `${DAY_NAMES[arg.date.getDay()]} ${day}/${month}`;
+    },
+    events: [],
+    eventContent: renderCalendarEventContent,
+    eventClick: (info) => {
+      const s = info.event.extendedProps.session;
+      if (s) openCalendarSessionModal(s);
+    },
+  });
+  weekCalendar.render();
+}
+
+function renderCalendarEventContent(arg) {
+  const s = arg.event.extendedProps.session;
+  const color = CAT_COLORS[s.category] || '#64748b';
+  const startMs = arg.event.start.getTime();
+  const endMs = (arg.event.end || arg.event.start).getTime();
+  const totalMs = Math.max(endMs - startMs, 1000);
+  let fgHtml = '';
+  for (const range of (s.foreground_ranges || [])) {
+    const fStart = new Date(range[0]).getTime();
+    const fEnd = new Date(range[1]).getTime();
+    const top = Math.max(((fStart - startMs) / totalMs) * 100, 0);
+    const height = Math.max(((fEnd - fStart) / totalMs) * 100, 3);
+    fgHtml += `<div class="fc-sess-fg" style="top:${top}%;height:${height}%;background:${color}"></div>`;
+  }
+  const wrap = document.createElement('div');
+  wrap.className = 'fc-sess-event';
+  wrap.innerHTML = `<div class="fc-sess-bg" style="background:${color}"></div>${fgHtml}<div class="fc-sess-label">${esc(s.detail || s.process || '')}</div>`;
+  return { domNodes: [wrap] };
+}
+
+function openCalendarSessionModal(s) {
+  const key = s.process + '::' + s.category + '::' + s.detail;
+  renderSessionModal({ key, process: s.process, category: s.category, detail: s.detail, total: s.total_seconds, items: [s], code: s.jira_code || null });
+}
+
+function updateWeekCalendar() {
+  if (!weekCalendar) return;
+  const events = [];
+  const day = allData[selectedDate];
+  if (day && day.sessions) {
+    for (const s of day.sessions) {
+      events.push({ start: s.start, end: s.end, extendedProps: { session: s } });
+    }
+  }
+  weekCalendar.removeAllEventSources();
+  weekCalendar.addEventSource(events);
+  weekCalendar.gotoDate(selectedDate);
+}
+
 // Inicialização: aguarda pywebview estar pronto, ou inicia direto no navegador
 let _appStarted = false;
 function _startApp() {
   if (_appStarted) return;
   _appStarted = true;
+  initWeekCalendar();
   loadData();
   setInterval(loadData, 15000);
 }
@@ -639,7 +1131,39 @@ async function openSettings() {
     if (_loginEnabled) togLogin.classList.add('on'); else togLogin.classList.remove('on');
     const dd = document.getElementById('settings-data-dir');
     if (dd && s.data_dir) dd.textContent = s.data_dir;
+    const ignored = await pywebview.api.get_ignored_processes();
+    const ig = document.getElementById('settings-ignored');
+    if (ig) ig.value = (ignored || []).join(', ');
+    const jc = await pywebview.api.get_jira_config();
+    document.getElementById('jira-url').value = jc.base_url || '';
+    document.getElementById('jira-email').value = jc.email || '';
+    document.getElementById('jira-token').placeholder = jc.has_jira_token ? 'Token salvo (deixe em branco p/ manter)' : 'API token do Jira';
+    document.getElementById('tempo-token').placeholder = jc.has_tempo_token ? 'Token salvo (deixe em branco p/ manter)' : 'API token do Tempo';
   }
+}
+async function saveJiraConfig() {
+  if (typeof pywebview === 'undefined' || !pywebview.api) return;
+  const base_url = document.getElementById('jira-url').value.trim();
+  const email = document.getElementById('jira-email').value.trim();
+  const jt = document.getElementById('jira-token').value.trim();
+  const tt = document.getElementById('tempo-token').value.trim();
+  await pywebview.api.save_jira_config(base_url, email, jt || null, tt || null);
+  document.getElementById('jira-token').value = '';
+  document.getElementById('tempo-token').value = '';
+  document.getElementById('jira-status').textContent = 'Configuração salva.';
+}
+async function testJiraConnection() {
+  if (typeof pywebview === 'undefined' || !pywebview.api) return;
+  const statusEl = document.getElementById('jira-status');
+  statusEl.textContent = 'Testando...';
+  const r = await pywebview.api.test_jira_connection();
+  statusEl.textContent = r.ok ? ('Conectado como ' + r.display_name) : ('Erro: ' + r.error);
+}
+async function saveIgnored() {
+  if (typeof pywebview === 'undefined' || !pywebview.api) return;
+  const raw = document.getElementById('settings-ignored').value;
+  const names = raw.split(',').map(s => s.trim()).filter(Boolean);
+  await pywebview.api.save_ignored_processes(names);
 }
 function closeSettings() {
   document.getElementById('settings-overlay').classList.add('hidden');
@@ -657,6 +1181,15 @@ async function toggleLogin() {
   const tog = document.getElementById('tog-login');
   if (_loginEnabled) tog.classList.add('on'); else tog.classList.remove('on');
   await pywebview.api.save_setting('login_mode', _loginEnabled);
+}
+async function uninstallApp() {
+  if (typeof pywebview === 'undefined' || !pywebview.api) {
+    alert('Desinstalação só está disponível no aplicativo desktop.');
+    return;
+  }
+  if (!confirm('Tem certeza que deseja desinstalar o Activity Tracker?\n\nO app será fechado e removido do computador.')) return;
+  const deleteData = confirm('Deseja também apagar o histórico de atividades registradas?\n\nOK = apagar tudo (não pode ser desfeito)\nCancelar = manter os dados salvos, caso queira reinstalar depois');
+  await pywebview.api.uninstall(deleteData);
 }
 </script>
 </body>
@@ -686,6 +1219,23 @@ class Handler(BaseHTTPRequestHandler):
             date_filter = params.get("date", [None])[0]
             csv_data = export_csv(date_filter)
             fname = f"atividades_{date_filter or 'todas'}.csv"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+            self.end_headers()
+            self.wfile.write(csv_data.encode("utf-8-sig"))
+
+        elif path == "/vendor/fullcalendar.min.js":
+            fpath = VENDOR_DIR / "fullcalendar.min.js"
+            if fpath.exists():
+                self._send(200, "application/javascript; charset=utf-8", fpath.read_bytes())
+            else:
+                self._send(404, "text/plain", b"Not found")
+
+        elif path == "/export/sessions-csv":
+            date_filter = params.get("date", [None])[0]
+            csv_data = export_sessions_csv(date_filter)
+            fname = f"sessoes_{date_filter or 'todas'}.csv"
             self.send_response(200)
             self.send_header("Content-Type", "text/csv; charset=utf-8")
             self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
@@ -728,16 +1278,51 @@ def export_csv(date_filter=None):
     return "\n".join(lines)
 
 
-def main():
+def export_sessions_csv(date_filter=None) -> str:
+    """Exporta as sessões (motor novo) com o código Jira/Tempo atribuído,
+    pronto para apontamento manual — plano B mesmo com a integração via API."""
+    sessions = load_sessions()
+    codes = load_jira_codes()
+    if date_filter:
+        sessions = [s for s in sessions if s.get("date") == date_filter]
+    sessions.sort(key=lambda s: s.get("start", ""))
+
+    lines = ["Data,Início,Fim,Categoria,Processo,Detalhe,Duração Total (min),Duração em Foco (min),Código Jira/Tempo"]
+    for s in sessions:
+        code = codes.get(s.get("id"), {}).get("code", "")
+        detail = (s.get("detail") or "").replace('"', '""')
+        proc = (s.get("process") or "").replace('"', '""')
+        total_min = round((s.get("total_seconds") or 0) / 60, 1)
+        fg_min = round((s.get("foreground_seconds") or 0) / 60, 1)
+        start_t = (s.get("start") or "")[11:19]
+        end_t = (s.get("end") or "")[11:19]
+        lines.append(
+            f'{s.get("date","")},{start_t},{end_t},"{s.get("category","")}","{proc}","{detail}",{total_min},{fg_min},"{code}"'
+        )
+    return "\n".join(lines)
+
+
+def start_server():
+    """Faz o bind numa porta livre e retorna (server, port) sem bloquear —
+    quem chamar decide se roda serve_forever() numa thread própria. Usado
+    tanto pelo modo standalone (main()) quanto pela janela do app, que
+    precisa saber a porta pra carregar a UI via HTTP (necessário pro
+    <script src> do FullCalendar funcionar — carregar via html= puro não
+    tem origem HTTP real pra resolver caminhos relativos)."""
     port = PORT
     server = None
     for p in range(port, port + 20):
         try:
-            server = HTTPServer(("0.0.0.0", p), Handler)
+            server = HTTPServer(("127.0.0.1", p), Handler)
             port = p
             break
         except OSError:
             continue
+    return server, port
+
+
+def main():
+    server, port = start_server()
     if server is None:
         print("[AVISO] Servidor web nao disponivel (todas as portas ocupadas).")
         return

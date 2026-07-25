@@ -18,7 +18,7 @@ NAME = "ActivityTracker"
 DIST = Path("dist")
 BUILD = Path("build")
 
-DEPS = ["pyinstaller", "pywebview", "psutil", "Pillow"]
+DEPS = ["pyinstaller", "pywebview", "psutil", "Pillow", "keyring"]
 if sys.platform == "win32":
     DEPS.append("winotify")
 
@@ -85,6 +85,9 @@ def build():
 
     icon_path = make_icon()
 
+    add_data_sep = ";" if sys.platform == "win32" else ":"
+    vendor_src = str(Path("vendor") / "fullcalendar.min.js")
+
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--onefile",
@@ -96,6 +99,9 @@ def build():
         "--hidden-import", "server",
         "--hidden-import", "reminder",
         "--hidden-import", "psutil",
+        "--hidden-import", "jira_client",
+        "--collect-submodules", "keyring",
+        "--add-data", f"{vendor_src}{add_data_sep}vendor",
     ]
 
     if icon_path:

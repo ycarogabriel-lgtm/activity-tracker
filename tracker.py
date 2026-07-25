@@ -10,7 +10,8 @@ import os
 import re
 import sys
 import subprocess
-from datetime import datetime, date
+import uuid
+from datetime import datetime, date, timedelta
 from pathlib import Path
 
 # ─── Detecção de plataforma ───────────────────────────────────────────────────
@@ -49,8 +50,13 @@ def _data_dir() -> Path:
 SCRIPT_DIR = _data_dir()
 LOG_FILE  = SCRIPT_DIR / "activity_log.json"
 LOCK_FILE = SCRIPT_DIR / "tracker.lock"
-INTERVAL_SECONDS = 10          # Intervalo de captura (segundos)
-MAX_RECORDS = 5000             # Máximo de registros mantidos no JSON
+INTERVAL_SECONDS = 5            # Intervalo de captura (segundos)
+MAX_RECORDS = 5000             # Máximo de registros mantidos no JSON (log legado)
+
+# ─── Motor de sessões (multi-janela, primeiro + segundo plano) ────────────────
+SESSIONS_FILE        = SCRIPT_DIR / "activity_sessions.jsonl"   # sessões fechadas, 1 por linha
+ACTIVE_SESSIONS_FILE = SCRIPT_DIR / "active_sessions.json"      # checkpoint das sessões em aberto
+SETTINGS_FILE         = SCRIPT_DIR / "tracker_settings.json"     # config do tracker (ex: apps ignorados)
 
 
 def _pid_running(pid: int) -> bool:
@@ -363,6 +369,247 @@ def read_teams_log() -> dict:
     return {"in_meeting": in_meeting, "status": status}
 
 
+# ─── Enumeração de TODAS as janelas abertas (não só a frontmost) ──────────────
+
+def get_all_windows_info() -> list:
+    """
+    Retorna uma lista de {process, title, is_foreground} para todas as janelas
+    visíveis do sistema — base do motor de sessões multi-janela.
+    """
+    if IS_MACOS:
+        return _get_all_windows_macos()
+    if WIN32_AVAILABLE:
+        return _get_all_windows_win32()
+    return []
+
+
+def _get_all_windows_macos() -> list:
+    """
+    Lista todas as janelas de apps visíveis via System Events. Marca como
+    'is_foreground' todas as janelas do app frontmost (o AppleScript não
+    expõe de forma confiável qual janela específica está em foco dentro de
+    um app com múltiplas janelas, então essa é a granularidade possível).
+    """
+    script = '''
+tell application "System Events"
+    set outLines to {}
+    set frontAppName to ""
+    try
+        set frontAppName to name of first application process whose frontmost is true
+    end try
+    repeat with proc in (every application process whose visible is true)
+        set procName to name of proc
+        try
+            repeat with w in windows of proc
+                set winName to name of w
+                if procName is frontAppName then
+                    set fg to "1"
+                else
+                    set fg to "0"
+                end if
+                set end of outLines to procName & "|~|" & winName & "|~|" & fg
+            end repeat
+        end try
+    end repeat
+    set AppleScript's text item delimiters to "|##|"
+    set outStr to outLines as string
+    set AppleScript's text item delimiters to ""
+    return outStr
+end tell'''
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script], capture_output=True, text=True, timeout=5
+        )
+        output = result.stdout.strip()
+        windows = []
+        if output:
+            for line in output.split("|##|"):
+                parts = line.split("|~|")
+                if len(parts) != 3:
+                    continue
+                proc_name, win_name, fg = parts
+                windows.append({
+                    "process": proc_name.strip(),
+                    "title": win_name.strip(),
+                    "is_foreground": fg == "1",
+                })
+        return windows
+    except Exception:
+        return []
+
+
+def _get_all_windows_win32() -> list:
+    windows = []
+    if not WIN32_AVAILABLE:
+        return windows
+    fg_hwnd = win32gui.GetForegroundWindow()
+
+    def _cb(hwnd, _):
+        if not win32gui.IsWindowVisible(hwnd):
+            return True
+        title = win32gui.GetWindowText(hwnd)
+        if not title:
+            return True
+        try:
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            proc_name = psutil.Process(pid).name()
+        except Exception:
+            return True
+        windows.append({
+            "process": proc_name,
+            "title": title,
+            "is_foreground": hwnd == fg_hwnd,
+        })
+        return True
+
+    try:
+        win32gui.EnumWindows(_cb, None)
+    except Exception:
+        pass
+    return windows
+
+
+# ─── Normalização de título (clusterização por assunto) ───────────────────────
+
+_NOISE_PATTERNS = [
+    re.compile(r'^\(\d+\)\s*'),                                    # "(3) Gmail..."
+    re.compile(r'\s*[•·]\s*$'),                                     # "Título •"
+    re.compile(r'\s*-\s*(não lida[s]?|unread|\d+\s*novas?)\s*$', re.IGNORECASE),
+]
+
+def normalize_detail(detail: str) -> str:
+    """Remove ruído volátil do título (contadores, indicadores) sem perder o
+    assunto, para não fragmentar o mesmo contexto em clusters diferentes."""
+    if not detail:
+        return detail
+    d = detail
+    for pat in _NOISE_PATTERNS:
+        d = pat.sub('', d)
+    return d.strip()
+
+
+# ─── Configurações do tracker (apps ignorados etc.) ───────────────────────────
+
+def load_tracker_settings() -> dict:
+    if SETTINGS_FILE.exists():
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_tracker_settings(settings: dict):
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
+
+
+def get_ignored_processes() -> set:
+    return {p.lower() for p in load_tracker_settings().get("ignored_processes", [])}
+
+
+def set_ignored_processes(names: list):
+    settings = load_tracker_settings()
+    settings["ignored_processes"] = list(names)
+    save_tracker_settings(settings)
+
+
+# ─── Motor de sessões (agrupa por processo+assunto, com fg/bg contínuos) ──────
+
+def _flush_session(sess: dict):
+    """Grava uma sessão encerrada como 1 linha no arquivo JSONL."""
+    try:
+        with open(SESSIONS_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(sess, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"[ERRO] Falha ao gravar sessão: {e}")
+
+
+def _checkpoint_active(active_sessions: dict):
+    """Sobrescreve o snapshot das sessões em aberto (arquivo pequeno, barato
+    de reescrever a cada poll — protege contra perda de dados em caso de
+    crash ou queda de energia)."""
+    try:
+        with open(ACTIVE_SESSIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(active_sessions.values()), f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[ERRO] Falha ao salvar checkpoint de sessões: {e}")
+
+
+def _recover_active_sessions():
+    """Sessões que ficaram abertas numa execução anterior (crash/queda) são
+    fechadas como estavam no último checkpoint, para não perder os dados."""
+    if not ACTIVE_SESSIONS_FILE.exists():
+        return
+    try:
+        with open(ACTIVE_SESSIONS_FILE, "r", encoding="utf-8") as f:
+            leftover = json.load(f)
+        for sess in leftover:
+            _flush_session(sess)
+    except Exception:
+        pass
+    finally:
+        ACTIVE_SESSIONS_FILE.unlink(missing_ok=True)
+
+
+def capture_multi_window(active_sessions: dict, ignored: set):
+    """
+    Atualiza active_sessions in-place: uma sessão por (processo, categoria,
+    assunto normalizado), viva enquanto a janela permanecer aberta em
+    qualquer poll — em primeiro OU segundo plano. Fecha (flush) sessões cuja
+    janela sumiu da lista de abertas.
+    """
+    now = datetime.now()
+    now_iso = now.isoformat(timespec="seconds")
+    gap_limit = (now - timedelta(seconds=INTERVAL_SECONDS * 1.5)).isoformat(timespec="seconds")
+
+    seen_keys = set()
+    for w in get_all_windows_info():
+        proc = w.get("process") or ""
+        if proc.lower() in ignored:
+            continue
+        category, detail = classify_window(w.get("title", ""), proc)
+        if category == "idle":
+            continue
+        detail = normalize_detail(detail) or w.get("title", "")
+        key = f"{proc}::{category}::{detail}"
+        seen_keys.add(key)
+
+        sess = active_sessions.get(key)
+        if sess is None:
+            sess = {
+                "id": uuid.uuid4().hex[:12],
+                "process": proc,
+                "category": category,
+                "detail": detail,
+                "date": now.strftime("%Y-%m-%d"),
+                "start": now_iso,
+                "end": now_iso,
+                "total_seconds": 0,
+                "foreground_seconds": 0,
+                "foreground_ranges": [],
+            }
+            active_sessions[key] = sess
+
+        sess["end"] = now_iso
+        sess["total_seconds"] += INTERVAL_SECONDS
+
+        if w.get("is_foreground"):
+            sess["foreground_seconds"] += INTERVAL_SECONDS
+            ranges = sess["foreground_ranges"]
+            if ranges and ranges[-1][1] >= gap_limit:
+                ranges[-1][1] = now_iso
+            else:
+                ranges.append([now_iso, now_iso])
+
+    closed_keys = [k for k in active_sessions if k not in seen_keys]
+    for k in closed_keys:
+        _flush_session(active_sessions.pop(k))
+
+    _checkpoint_active(active_sessions)
+
+
 # ─── Gerenciamento do log JSON ────────────────────────────────────────────────
 
 def load_log() -> list:
@@ -435,6 +682,9 @@ def main():
     records = load_log()
     print(f"  {len(records)} registros existentes carregados.")
 
+    _recover_active_sessions()
+    active_sessions: dict = {}
+
     try:
         while True:
             try:
@@ -455,6 +705,12 @@ def main():
                     }.get(entry["category"], entry["category"])
                     print(f"[{entry['time']}] {cat_label}: {entry['detail'] or entry['title'][:60]}")
 
+                try:
+                    ignored = get_ignored_processes()
+                    capture_multi_window(active_sessions, ignored)
+                except Exception as e:
+                    print(f"[ERRO] Motor de sessões: {e}")
+
                 time.sleep(INTERVAL_SECONDS)
 
             except KeyboardInterrupt:
@@ -464,6 +720,8 @@ def main():
                 print(f"[ERRO] {e}")
                 time.sleep(INTERVAL_SECONDS)
     finally:
+        for sess in list(active_sessions.values()):
+            _flush_session(sess)
         _release_lock()
 
 
