@@ -13,6 +13,12 @@ Baixe a versão mais recente em [**Releases**](https://github.com/ycarogabriel-l
 
 ## macOS
 
+### Instalação
+
+1. Baixe o `ActivityTracker-macOS.dmg` na página de [Releases](https://github.com/ycarogabriel-lgtm/activity-tracker/releases/latest)
+2. Abra o `.dmg` e arraste o **ActivityTracker** pra pasta **Applications**
+3. Abra o app pela pasta Applications (não pela janela do `.dmg`)
+
 ### Primeira abertura
 
 O macOS bloqueia apps não assinados pela App Store. Na primeira vez:
@@ -27,14 +33,11 @@ A partir daí o app abre normalmente com duplo clique.
 
 > **macOS Sequoia (15+):** o método de botão direito → Abrir foi removido. O único fluxo é pelo menu Privacidade e Segurança acima.
 
+Na primeira vez que o app tentar ler a janela ativa, o macOS também vai pedir permissão de **Acessibilidade** — clique em **Permitir**. Isso só é pedido uma vez por instalação (não precisa repetir a cada abertura).
+
 ### Alternativa via Terminal (abre sem nenhum aviso)
 
-Entre na pasta onde o app está o seu executável pelo Terminal. Se estiver na sua pasta de Downloads, insira o comando:
-
-```bash
-cd ~/downloads
-```
-Logo depois, execute uma vez:
+Entre na pasta onde está o `ActivityTracker.app` pelo Terminal (ex: `cd /Applications`) e execute uma vez:
 ```bash
 xattr -cr ActivityTracker.app
 codesign --force --deep --sign - ActivityTracker.app

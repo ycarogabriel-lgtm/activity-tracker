@@ -80,6 +80,39 @@ def build_daemon_macos():
     daemon_bin.unlink()
 
 
+def build_dmg():
+    """
+    Empacota o .app num .dmg — instalação padrão do macOS (abre uma janela
+    com o app e um atalho pra pasta Applications, arrasta um no outro).
+    Bem mais amigável que baixar um .zip e descompactar manualmente.
+    """
+    app_path = DIST / f"{NAME}.app"
+    dmg_path = DIST / f"{NAME}.dmg"
+    dmg_path.unlink(missing_ok=True)
+
+    staging = DIST / "_dmg_staging"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir()
+    try:
+        shutil.copytree(app_path, staging / f"{NAME}.app")
+        (staging / "Applications").symlink_to("/Applications")
+
+        result = subprocess.run([
+            "hdiutil", "create",
+            "-volname", NAME,
+            "-srcfolder", str(staging),
+            "-ov", "-format", "UDZO",
+            str(dmg_path),
+        ])
+        if result.returncode != 0:
+            print("[AVISO] Falha ao gerar o .dmg — o .app continua disponível normalmente.")
+            return None
+        return dmg_path
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
 def build():
     ensure_deps()
 
@@ -133,9 +166,11 @@ def build():
         print("\n[ERRO] Build falhou. Verifique as mensagens acima.")
         sys.exit(1)
 
+    dmg_path = None
     if sys.platform == "darwin":
         out = DIST / f"{NAME}.app"
         build_daemon_macos()
+        dmg_path = build_dmg()
     elif sys.platform == "win32":
         out = DIST / f"{NAME}.exe"
     else:
@@ -144,6 +179,8 @@ def build():
     print(f"\n{'='*60}")
     print(f"  Build concluído!")
     print(f"  Executável: {out.resolve()}")
+    if dmg_path:
+        print(f"  Instalador: {dmg_path.resolve()}")
     if sys.platform == "darwin":
         print(f"\n  Para rodar:")
         print(f'    chmod +x "{out.resolve()}"')

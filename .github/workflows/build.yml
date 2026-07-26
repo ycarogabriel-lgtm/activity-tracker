@@ -22,17 +22,14 @@ jobs:
       - name: Instalar dependências Python
         run: pip install pyinstaller pywebview psutil Pillow
 
-      - name: Build
+      - name: Build (gera dist/ActivityTracker.app e dist/ActivityTracker.dmg)
         run: python build.py
-
-      - name: Zipar .app bundle
-        run: cd dist && zip -r ../ActivityTracker-macOS.zip ActivityTracker.app
 
       - name: Upload artefato macOS
         uses: actions/upload-artifact@v4
         with:
           name: ActivityTracker-macOS
-          path: ActivityTracker-macOS.zip
+          path: dist/ActivityTracker.dmg
 
   build-windows:
     runs-on: windows-latest
@@ -74,13 +71,15 @@ jobs:
           name: ActivityTracker-Windows
           path: ./release
 
-      - name: Renomear Windows exe
-        run: mv ./release/ActivityTracker.exe ./release/ActivityTracker-Windows.exe
+      - name: Renomear artefatos
+        run: |
+          mv ./release/ActivityTracker.exe ./release/ActivityTracker-Windows.exe
+          mv ./release/ActivityTracker.dmg ./release/ActivityTracker-macOS.dmg
 
       - name: Criar Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            ./release/ActivityTracker-macOS.zip
+            ./release/ActivityTracker-macOS.dmg
             ./release/ActivityTracker-Windows.exe
           generate_release_notes: true
