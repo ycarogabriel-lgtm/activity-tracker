@@ -7,6 +7,19 @@ import json
 import os
 import sys
 from pathlib import Path
+
+
+def _atomic_write_json(path: Path, data, **json_kwargs):
+    """Escreve em arquivo temporário e troca com os.replace() (atômico) —
+    evita corromper o arquivo se o processo for morto no meio da escrita."""
+    tmp = path.parent / f".{path.name}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, **json_kwargs)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
 from datetime import datetime, timedelta
 from collections import defaultdict
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -180,8 +193,7 @@ def delete_sessions(session_ids: list):
     sessões é append-only, então não reescrevemos ele; só filtramos na leitura."""
     deleted = load_deleted_sessions()
     deleted.update(session_ids)
-    with open(DELETED_SESSIONS_FILE, "w", encoding="utf-8") as f:
-        json.dump(sorted(deleted), f, ensure_ascii=False, indent=2)
+    _atomic_write_json(DELETED_SESSIONS_FILE, sorted(deleted), ensure_ascii=False, indent=2)
 
 
 def load_sessions() -> list:
@@ -250,8 +262,7 @@ def assign_jira_code(session_ids: list, code: str):
             codes[sid] = {"code": code, "assigned_at": now}
         else:
             codes.pop(sid, None)
-    with open(JIRA_CODES_FILE, "w", encoding="utf-8") as f:
-        json.dump(codes, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(JIRA_CODES_FILE, codes, ensure_ascii=False, indent=2)
 
 
 def set_jira_label_code(label_key: str, code: str):
@@ -263,8 +274,7 @@ def set_jira_label_code(label_key: str, code: str):
         codes[label_key] = {"code": code, "assigned_at": now}
     else:
         codes.pop(label_key, None)
-    with open(JIRA_LABEL_CODES_FILE, "w", encoding="utf-8") as f:
-        json.dump(codes, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(JIRA_LABEL_CODES_FILE, codes, ensure_ascii=False, indent=2)
 
 
 def get_sessions_by_date(date_filter=None) -> dict:
@@ -431,25 +441,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .chart-bar { width: 100%; border-radius: 3px 3px 0 0; background: var(--accent); opacity: 0.8; min-height: 2px; transition: height .3s; }
   .chart-label { font-size: 0.6rem; color: var(--text2); }
 
-  /* Timeline de sessões (multi-janela, primeiro + segundo plano) */
-  .sess-panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; flex-wrap: wrap; gap: 8px; }
-  .sess-axis { position: relative; height: 16px; margin: 0 0 6px 222px; border-bottom: 1px solid var(--border); }
-  .sess-axis-tick { position: absolute; transform: translateX(-50%); font-size: 0.62rem; color: var(--text2); }
-  .sess-rows { display: flex; flex-direction: column; gap: 6px; max-height: 380px; overflow-y: auto; }
-  .sess-row { display: grid; grid-template-columns: 22px 190px 1fr 60px; gap: 6px; align-items: center; }
-  .sess-row.no-select { grid-template-columns: 0px 190px 1fr 60px; }
-  .sess-row.no-select .sess-checkbox { visibility: hidden; pointer-events: none; }
-  .sess-row:hover .sess-row-label { color: var(--accent); }
-  .sess-checkbox { width: 15px; height: 15px; cursor: pointer; }
-  .sess-row-label { font-size: 0.76rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; transition: color .1s; }
-  .sess-track { position: relative; height: 20px; background: var(--surface2); border-radius: 5px; overflow: hidden; }
-  .sess-bar { position: absolute; top: 0; bottom: 0; opacity: 0.32; border-radius: 4px; }
-  .sess-fg { position: absolute; top: 0; bottom: 0; opacity: 1; }
-  .sess-row-total { font-size: 0.76rem; text-align: right; color: var(--text2); font-family: monospace; }
-  .sess-code-badge { display: inline-block; background: rgba(59,130,246,.18); color: var(--accent); font-size: 0.62rem; font-weight: 700; padding: 1px 6px; border-radius: 999px; margin-left: 6px; flex-shrink: 0; }
-  .sess-selection-bar { display: none; align-items: center; gap: 10px; background: var(--surface2); border: 1px solid var(--accent); border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; font-size: 0.78rem; flex-wrap: wrap; }
-  @media(max-width:700px){ .sess-row{grid-template-columns:18px 110px 1fr 46px;} .sess-axis{margin-left:150px;} }
   .settings-field { width: 100%; box-sizing: border-box; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 8px; font-size: 0.78rem; margin-top: 6px; font-family: inherit; }
+  .ignored-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--surface2); border: 1px solid var(--border); border-radius: 999px; padding: 4px 6px 4px 12px; font-size: 0.76rem; color: var(--text); }
+  .ignored-chip button { background: none; border: none; color: var(--text2); cursor: pointer; font-size: 0.85rem; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+  .ignored-chip button:hover { background: rgba(239,68,68,.2); color: #ef4444; }
 
   /* Modal de detalhe da atividade (clique numa sessão) */
   .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 600; display: flex; align-items: center; justify-content: center; padding: 20px; animation: fadeIn .15s; }
@@ -471,12 +466,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   .empty { text-align: center; padding: 48px; color: var(--text2); }
 
-  /* Calendário semanal (FullCalendar vendorizado, tematizado) */
+  /* Calendário do dia (FullCalendar vendorizado, tematizado) */
   #week-calendar { --fc-border-color: var(--border); --fc-page-bg-color: transparent; --fc-neutral-bg-color: var(--surface2); --fc-list-event-hover-bg-color: var(--surface2); --fc-today-bg-color: rgba(59,130,246,.08); --fc-event-bg-color: var(--accent); --fc-event-border-color: transparent; color: var(--text); font-family: inherit; }
   #week-calendar .fc-col-header-cell-cushion, #week-calendar .fc-timegrid-slot-label-cushion, #week-calendar .fc-timegrid-axis-cushion { color: var(--text2); font-size: 0.7rem; text-decoration: none; }
   #week-calendar a { color: var(--text); text-decoration: none; }
   #week-calendar .fc-scrollgrid, #week-calendar table { border-color: var(--border) !important; }
   #week-calendar .fc-timegrid-slot, #week-calendar .fc-timegrid-col { border-color: var(--border); }
+  /* Dá mais espaço vertical pra hora anterior/atual/seguinte — é onde tem
+     mais chance de ter várias atividades concorrentes pra examinar. */
+  #week-calendar .fc-timegrid-slot-lane.cal-hour-focus,
+  #week-calendar .fc-timegrid-slot-label.cal-hour-focus { height: 90px !important; background: rgba(59,130,246,.06); }
   .fc-sess-event { position: relative; height: 100%; width: 100%; border-radius: 4px; overflow: hidden; padding: 1px 4px; font-size: 0.65rem; color: #fff; cursor: pointer; }
   .fc-sess-bg { position: absolute; inset: 0; opacity: 0.38; }
   .fc-sess-fg { position: absolute; left: 0; right: 0; opacity: 1; }
@@ -532,9 +531,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       </div>
       <div class="settings-info">
         <strong>Apps ignorados no rastreamento em segundo plano</strong>
-        <textarea id="settings-ignored" rows="2" placeholder="Ex: Spotify, WhatsApp, Mensagens"
-          style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px;font-size:0.78rem;margin-top:6px;resize:vertical;font-family:inherit;"></textarea>
-        <button class="btn" style="margin-top:8px;" onclick="saveIgnored()">Salvar</button>
+        <div id="ignored-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;"></div>
+        <div style="display:flex;gap:6px;margin-top:8px;">
+          <input id="ignored-new" class="settings-field" style="margin-top:0;" placeholder="Nome do processo (ex: Spotify)">
+          <button class="btn" onclick="addIgnoredProcess()">Adicionar</button>
+        </div>
       </div>
       <div class="settings-info">
         <strong>Integração Jira / Tempo</strong>
@@ -571,7 +572,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div id="week-range" class="week-range"></div>
 
   <div class="panel" id="week-calendar-panel" style="margin-bottom:20px;">
-    <div class="panel-title">Calendário do dia (clique numa atividade pra ver detalhes)</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div class="panel-title" style="margin-bottom:0">Calendário do dia (clique numa atividade pra ver detalhes)</div>
+      <button class="btn" onclick="exportSessionsData()">&#8595; Exportar sessões</button>
+    </div>
     <div id="week-calendar"></div>
   </div>
 
@@ -769,9 +773,6 @@ function renderDay(d) {
   }
   html += '</div></div>';
 
-  // ── Timeline por sessão (motor novo: primeiro + segundo plano) ──────────────
-  html += renderSessionsTimeline(d, day.sessions || []);
-
   // ── Top listas ─────────────────────────────────────────────────────────────
   html += '<div class="two-col">';
   html += renderTopPanel('Reuniões & Chats Teams', summary.details, ['teams_meeting','teams_chat'], '#8b5cf6', '#06b6d4');
@@ -781,138 +782,9 @@ function renderDay(d) {
   document.getElementById('content').innerHTML = html;
 }
 
-function timeToSeconds(iso) {
-  // iso no formato '...T09:03:10'
-  const t = iso.slice(11, 19).split(':').map(Number);
-  return t[0] * 3600 + t[1] * 60 + (t[2] || 0);
-}
-
-let sessSelectMode = false;
-let sessSelectedRows = new Set();
-let sessRowsData = new Map();
 let currentModalRow = null;
 
-function renderSessionsTimeline(dateStr, sessions) {
-  sessRowsData = new Map();
-
-  if (!sessions || sessions.length === 0) {
-    return '<div class="panel" style="margin-bottom:20px"><div class="panel-title">Linha do tempo por sessão (opacidade = tempo em foco)</div>' +
-      '<div style="color:var(--text2);font-size:.82rem;padding:6px 0">Nenhuma sessão do motor novo registrada ainda para este dia.</div></div>';
-  }
-
-  let minSec = Infinity, maxSec = -Infinity;
-  for (const s of sessions) {
-    minSec = Math.min(minSec, timeToSeconds(s.start));
-    maxSec = Math.max(maxSec, timeToSeconds(s.end));
-  }
-  minSec = Math.max(0, Math.floor(minSec / 3600) * 3600 - 3600);
-  maxSec = Math.min(86400, Math.ceil(maxSec / 3600) * 3600 + 3600);
-  const totalSpan = Math.max(maxSec - minSec, 3600);
-  const pct = (sec) => ((sec - minSec) / totalSpan) * 100;
-
-  const rows = new Map();
-  for (const s of sessions) {
-    const key = s.process + '::' + s.category + '::' + s.detail;
-    if (!rows.has(key)) rows.set(key, { key, process: s.process, category: s.category, detail: s.detail, total: 0, items: [], code: null });
-    const row = rows.get(key);
-    row.total += s.total_seconds || 0;
-    row.items.push(s);
-    if (s.jira_code) row.code = s.jira_code;
-  }
-  const rowList = Array.from(rows.values()).sort((a, b) => b.total - a.total);
-  for (const row of rowList) sessRowsData.set(row.key, row);
-
-  let axisHtml = '<div class="sess-axis">';
-  for (let h = Math.ceil(minSec / 3600); h <= Math.floor(maxSec / 3600); h++) {
-    axisHtml += `<span class="sess-axis-tick" style="left:${pct(h * 3600)}%">${h}h</span>`;
-  }
-  axisHtml += '</div>';
-
-  let rowsHtml = '';
-  for (const row of rowList) {
-    const color = CAT_COLORS[row.category] || '#64748b';
-    let barsHtml = '';
-    for (const s of row.items) {
-      const barLeft = pct(timeToSeconds(s.start));
-      const barWidth = Math.max(pct(timeToSeconds(s.end)) - barLeft, 0.15);
-      let fgHtml = '';
-      for (const range of (s.foreground_ranges || [])) {
-        const fLeftAbs = pct(timeToSeconds(range[0]));
-        const fRightAbs = pct(timeToSeconds(range[1]));
-        const fLeft = fLeftAbs - barLeft;
-        const fWidth = Math.max(fRightAbs - fLeftAbs, 0.08);
-        fgHtml += `<div class="sess-fg" style="left:${fLeft}%;width:${fWidth}%;background:${color}"></div>`;
-      }
-      const tip = `${row.detail || row.process} — ${fmtDur(s.total_seconds)} aberto, ${fmtDur(s.foreground_seconds)} em foco`;
-      barsHtml += `<div class="sess-bar" style="left:${barLeft}%;width:${barWidth}%;background:${color}" title="${esc(tip)}">${fgHtml}</div>`;
-    }
-    const label = row.detail || row.process || '—';
-    const checked = sessSelectedRows.has(row.key) ? 'checked' : '';
-    const codeBadge = row.code ? `<span class="sess-code-badge">${esc(row.code)}</span>` : '';
-    rowsHtml += `<div class="sess-row ${sessSelectMode ? '' : 'no-select'}" style="cursor:pointer" onclick="if(!sessSelectMode) openSessionModal('${row.key}')">
-      <input type="checkbox" class="sess-checkbox" ${checked} onclick="event.stopPropagation()" onchange="toggleRowSelect('${row.key}')">
-      <div class="sess-row-label" title="${esc(label)}"><span class="cat-badge badge-${row.category}" style="margin-right:6px">${CAT_ICONS[row.category] || ''}</span>${esc(label.slice(0, 30))}${codeBadge}</div>
-      <div class="sess-track">${barsHtml}</div>
-      <div class="sess-row-total">${fmtDur(row.total)}</div>
-    </div>`;
-  }
-
-  return `<div class="panel" style="margin-bottom:20px">
-    <div class="sess-panel-head">
-      <div class="panel-title" style="margin-bottom:0">Linha do tempo por sessão (opacidade = tempo em foco)</div>
-      <div style="display:flex;gap:8px;">
-        <button class="btn" onclick="toggleSessSelectMode()">${sessSelectMode ? 'Cancelar seleção' : 'Selecionar vários'}</button>
-        <button class="btn" onclick="exportSessionsData()">&#8595; Exportar sessões</button>
-      </div>
-    </div>
-    <div class="sess-selection-bar" id="sess-selection-bar">
-      <span id="sess-selection-count"></span>
-      <button class="btn" onclick="openMultiSessionModal()">Abrir selecionados</button>
-    </div>
-    ${axisHtml}
-    <div class="sess-rows">${rowsHtml}</div>
-  </div>`;
-}
-
-function toggleSessSelectMode() {
-  sessSelectMode = !sessSelectMode;
-  sessSelectedRows.clear();
-  renderDay(selectedDate);
-}
-
-function toggleRowSelect(rowKey) {
-  if (sessSelectedRows.has(rowKey)) sessSelectedRows.delete(rowKey); else sessSelectedRows.add(rowKey);
-  updateSessSelectionBar();
-}
-
-function updateSessSelectionBar() {
-  const bar = document.getElementById('sess-selection-bar');
-  if (!bar) return;
-  if (sessSelectedRows.size === 0) { bar.style.display = 'none'; return; }
-  let totalSecs = 0;
-  for (const key of sessSelectedRows) totalSecs += sessRowsData.get(key)?.total || 0;
-  bar.style.display = 'flex';
-  document.getElementById('sess-selection-count').textContent = `${sessSelectedRows.size} selecionado(s) — ${fmtDur(totalSecs)}`;
-}
-
-// ── Modal de detalhe da sessão ──────────────────────────────────────────────
-
-function openSessionModal(rowKey) {
-  const row = sessRowsData.get(rowKey);
-  if (row) renderSessionModal(row);
-}
-
-function openMultiSessionModal() {
-  if (sessSelectedRows.size === 0) return;
-  let items = [], total = 0;
-  for (const key of sessSelectedRows) {
-    const r = sessRowsData.get(key);
-    if (!r) continue;
-    items.push(...r.items);
-    total += r.total;
-  }
-  renderSessionModal({ key: null, process: '', category: 'app', detail: `${sessSelectedRows.size} atividades selecionadas`, total, items, code: null });
-}
+// ── Modal de detalhe da sessão (aberta pelo clique num evento do calendário) ─
 
 function renderSessionModal(row) {
   currentModalRow = row;
@@ -939,6 +811,10 @@ function renderSessionModal(row) {
       <button class="btn" onclick="saveModalCode()">Salvar código</button>
       <button class="btn" style="border-color:#ef4444;color:#ef4444;" onclick="deleteModalSessions()">Excluir</button>
     </div>
+    <label style="display:flex;align-items:flex-start;gap:6px;margin-top:8px;font-size:0.76rem;color:var(--text2);cursor:pointer;">
+      <input type="checkbox" id="modal-stop-tracking" style="margin-top:2px;">
+      <span>Também parar de rastrear "<strong style="color:var(--text)">${esc((row.process || '').slice(0, 40))}</strong>" — some da lista em Configurações → Apps ignorados, onde dá pra reverter a qualquer momento</span>
+    </label>
 
     <hr style="border:none;border-top:1px solid var(--border);margin:16px 0;">
 
@@ -967,7 +843,6 @@ async function saveModalCode() {
   const applyToLabel = applyLabelEl ? applyLabelEl.checked : false;
   await pywebview.api.assign_jira_code(currentModalRow.items.map(i => i.id), code, applyToLabel, currentModalRow.key);
   closeSessionModal();
-  sessSelectedRows.clear();
   loadData();
 }
 
@@ -976,9 +851,13 @@ async function deleteModalSessions() {
   const label = currentModalRow.detail || currentModalRow.process;
   if (!confirm(`Excluir "${label}" (${currentModalRow.items.length} ocorrência(s))? Essa ação não pode ser desfeita.`)) return;
   if (typeof pywebview === 'undefined' || !pywebview.api) { alert('Disponível só no aplicativo desktop.'); return; }
+  const stopTrackingEl = document.getElementById('modal-stop-tracking');
+  const stopTracking = stopTrackingEl ? stopTrackingEl.checked : false;
   await pywebview.api.delete_sessions(currentModalRow.items.map(i => i.id));
+  if (stopTracking && currentModalRow.process) {
+    await pywebview.api.add_ignored_process(currentModalRow.process);
+  }
   closeSessionModal();
-  sessSelectedRows.clear();
   loadData();
 }
 
@@ -993,7 +872,7 @@ async function sendModalWorklog() {
   const seconds = Math.round(minutes * 60);
   const r = await pywebview.api.send_worklog(currentModalRow.items.map(i => i.id), code, selectedDate, seconds, '');
   statusEl.textContent = r.ok ? 'Apontamento enviado ao Tempo!' : ('Erro: ' + r.error);
-  if (r.ok) { sessSelectedRows.clear(); loadData(); }
+  if (r.ok) loadData();
 }
 
 async function exportSessionsData() {
@@ -1033,8 +912,9 @@ function renderTopPanel(title, details, cats, color1, color2) {
   return html;
 }
 
-// ── Calendário semanal (FullCalendar) ───────────────────────────────────────
+// ── Calendário do dia (FullCalendar) ────────────────────────────────────────
 let weekCalendar = null;
+let weekCalendarShownDate = null;
 
 function initWeekCalendar() {
   if (weekCalendar || typeof FullCalendar === 'undefined') return;
@@ -1042,12 +922,19 @@ function initWeekCalendar() {
     initialView: 'timeGridDay',
     headerToolbar: false,
     firstDay: 1,
-    slotMinTime: '06:00:00',
-    slotMaxTime: '22:00:00',
+    slotMinTime: '00:00:00',
+    slotMaxTime: '24:00:00',
+    slotDuration: '01:00:00',
+    expandRows: true,
     slotLabelFormat: { hour: '2-digit', minute: '2-digit', hour12: false },
-    height: 480,
+    height: 620,
     nowIndicator: true,
     allDaySlot: false,
+    // Por padrão o FullCalendar empilha eventos concorrentes com leve
+    // deslocamento (staggered), o que fica ilegível com várias atividades
+    // no mesmo horário. Isso força colunas lado a lado de verdade.
+    slotEventOverlap: false,
+    eventOrder: (a, b) => (b.extendedProps.session?.total_seconds || 0) - (a.extendedProps.session?.total_seconds || 0),
     dayHeaderContent: (arg) => {
       const day = String(arg.date.getDate()).padStart(2, '0');
       const month = String(arg.date.getMonth() + 1).padStart(2, '0');
@@ -1056,16 +943,26 @@ function initWeekCalendar() {
     events: [],
     eventContent: renderCalendarEventContent,
     eventClick: (info) => {
-      const s = info.event.extendedProps.session;
-      if (s) openCalendarSessionModal(s);
+      const g = info.event.extendedProps.session;
+      if (g) renderSessionModal(g);
     },
   });
   weekCalendar.render();
 }
 
+function darkenColor(hex, amount) {
+  const c = (hex || '#64748b').replace('#', '');
+  const num = parseInt(c.length === 3 ? c.split('').map(x => x + x).join('') : c, 16);
+  const r = Math.round(((num >> 16) & 0xff) * (1 - amount));
+  const g = Math.round(((num >> 8) & 0xff) * (1 - amount));
+  const b = Math.round((num & 0xff) * (1 - amount));
+  return `rgb(${r},${g},${b})`;
+}
+
 function renderCalendarEventContent(arg) {
   const s = arg.event.extendedProps.session;
   const color = CAT_COLORS[s.category] || '#64748b';
+  const edgeColor = darkenColor(color, 0.45);
   const startMs = arg.event.start.getTime();
   const endMs = (arg.event.end || arg.event.start).getTime();
   const totalMs = Math.max(endMs - startMs, 1000);
@@ -1079,13 +976,45 @@ function renderCalendarEventContent(arg) {
   }
   const wrap = document.createElement('div');
   wrap.className = 'fc-sess-event';
+  wrap.style.borderLeft = `4px solid ${edgeColor}`;
+  wrap.title = `${s.detail || s.process || ''} — ${fmtDur(s.total_seconds)} aberto, ${fmtDur(s.foreground_seconds)} em foco`;
   wrap.innerHTML = `<div class="fc-sess-bg" style="background:${color}"></div>${fgHtml}<div class="fc-sess-label">${esc(s.detail || s.process || '')}</div>`;
   return { domNodes: [wrap] };
 }
 
-function openCalendarSessionModal(s) {
-  const key = s.process + '::' + s.category + '::' + s.detail;
-  renderSessionModal({ key, process: s.process, category: s.category, detail: s.detail, total: s.total_seconds, items: [s], code: s.jira_code || null });
+function groupSessionsByLabel(sessions) {
+  // Uma sessão "crua" é criada toda vez que a captura perde e reencontra a
+  // mesma janela (falha momentânea do AppleScript, o app foi minimizado e
+  // reaberto, o computador dormiu, etc). Em vez de desenhar um evento por
+  // sessão crua (o que fragmenta a mesma atividade em vários blocos soltos
+  // espalhados pelo dia), agrupamos por nome (processo+categoria+detalhe) e
+  // desenhamos UMA barra só, do primeiro ao último horário em que apareceu —
+  // com a opacidade marcando onde teve atividade de verdade dentro dela.
+  const groups = new Map();
+  for (const s of sessions) {
+    const key = s.process + '::' + s.category + '::' + s.detail;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key, process: s.process, category: s.category, detail: s.detail,
+        start: s.start, end: s.end,
+        total_seconds: 0, foreground_seconds: 0, foreground_ranges: [],
+        code: null, items: [],
+      });
+    }
+    const g = groups.get(key);
+    if (s.start < g.start) g.start = s.start;
+    if (s.end > g.end) g.end = s.end;
+    g.total_seconds += s.total_seconds || 0;
+    g.foreground_seconds += s.foreground_seconds || 0;
+    g.foreground_ranges.push(...(s.foreground_ranges || []));
+    if (s.jira_code) g.code = s.jira_code;
+    g.items.push(s);
+  }
+  for (const g of groups.values()) {
+    g.foreground_ranges.sort((a, b) => a[0].localeCompare(b[0]));
+    g.total = g.total_seconds; // alias esperado pela modal de detalhe
+  }
+  return Array.from(groups.values());
 }
 
 function updateWeekCalendar() {
@@ -1093,13 +1022,34 @@ function updateWeekCalendar() {
   const events = [];
   const day = allData[selectedDate];
   if (day && day.sessions) {
-    for (const s of day.sessions) {
-      events.push({ start: s.start, end: s.end, extendedProps: { session: s } });
+    for (const g of groupSessionsByLabel(day.sessions)) {
+      events.push({ start: g.start, end: g.end, extendedProps: { session: g } });
     }
   }
   weekCalendar.removeAllEventSources();
   weekCalendar.addEventSource(events);
-  weekCalendar.gotoDate(selectedDate);
+  // Só navega (o que reseta a posição de rolagem) quando o dia exibido
+  // realmente mudou — evita o calendário "pular" a cada atualização
+  // automática de dados (a cada 15s) enquanto o usuário está no mesmo dia.
+  if (weekCalendarShownDate !== selectedDate) {
+    weekCalendar.gotoDate(selectedDate);
+    weekCalendarShownDate = selectedDate;
+  }
+  highlightCurrentHourRows();
+}
+
+function highlightCurrentHourRows() {
+  const el = document.getElementById('week-calendar');
+  if (!el) return;
+  el.querySelectorAll('.cal-hour-focus').forEach(n => n.classList.remove('cal-hour-focus'));
+  const todayStr = new Date().toISOString().slice(0, 10);
+  if (selectedDate !== todayStr) return; // só faz sentido destacar "agora" no dia de hoje
+  const now = new Date();
+  const hours = [now.getHours() - 1, now.getHours(), now.getHours() + 1].filter(h => h >= 0 && h <= 23);
+  for (const h of hours) {
+    const t = String(h).padStart(2, '0') + ':00:00';
+    el.querySelectorAll(`[data-time="${t}"]`).forEach(n => n.classList.add('cal-hour-focus'));
+  }
 }
 
 // Inicialização: aguarda pywebview estar pronto, ou inicia direto no navegador
@@ -1131,9 +1081,7 @@ async function openSettings() {
     if (_loginEnabled) togLogin.classList.add('on'); else togLogin.classList.remove('on');
     const dd = document.getElementById('settings-data-dir');
     if (dd && s.data_dir) dd.textContent = s.data_dir;
-    const ignored = await pywebview.api.get_ignored_processes();
-    const ig = document.getElementById('settings-ignored');
-    if (ig) ig.value = (ignored || []).join(', ');
+    await refreshIgnoredChips();
     const jc = await pywebview.api.get_jira_config();
     document.getElementById('jira-url').value = jc.base_url || '';
     document.getElementById('jira-email').value = jc.email || '';
@@ -1159,11 +1107,44 @@ async function testJiraConnection() {
   const r = await pywebview.api.test_jira_connection();
   statusEl.textContent = r.ok ? ('Conectado como ' + r.display_name) : ('Erro: ' + r.error);
 }
-async function saveIgnored() {
+let ignoredProcessesList = [];
+
+async function refreshIgnoredChips() {
   if (typeof pywebview === 'undefined' || !pywebview.api) return;
-  const raw = document.getElementById('settings-ignored').value;
-  const names = raw.split(',').map(s => s.trim()).filter(Boolean);
-  await pywebview.api.save_ignored_processes(names);
+  ignoredProcessesList = await pywebview.api.get_ignored_processes();
+  renderIgnoredChips();
+}
+
+function renderIgnoredChips() {
+  const el = document.getElementById('ignored-chips');
+  if (!el) return;
+  if (!ignoredProcessesList || ignoredProcessesList.length === 0) {
+    el.innerHTML = '<span style="color:var(--text2);font-size:0.76rem;">Nenhum app ignorado</span>';
+    return;
+  }
+  el.innerHTML = ignoredProcessesList.map(name => `
+    <span class="ignored-chip">${esc(name)}<button onclick="removeIgnoredProcess('${esc(name).replace(/'/g, "\\'")}')" title="Voltar a rastrear">&#10005;</button></span>
+  `).join('');
+}
+
+async function addIgnoredProcess() {
+  if (typeof pywebview === 'undefined' || !pywebview.api) return;
+  const input = document.getElementById('ignored-new');
+  const name = input.value.trim();
+  if (!name) return;
+  if (!ignoredProcessesList.includes(name.toLowerCase())) {
+    ignoredProcessesList = [...ignoredProcessesList, name.toLowerCase()].sort();
+  }
+  await pywebview.api.save_ignored_processes(ignoredProcessesList);
+  input.value = '';
+  renderIgnoredChips();
+}
+
+async function removeIgnoredProcess(name) {
+  if (typeof pywebview === 'undefined' || !pywebview.api) return;
+  ignoredProcessesList = ignoredProcessesList.filter(n => n !== name);
+  await pywebview.api.save_ignored_processes(ignoredProcessesList);
+  renderIgnoredChips();
 }
 function closeSettings() {
   document.getElementById('settings-overlay').classList.add('hidden');
@@ -1249,6 +1230,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        # A janela do app carrega sempre pela mesma porta entre uma abertura e
+        # outra — sem isso, o WebView do macOS pode servir a página (ou o
+        # fullcalendar.min.js) de um cache antigo em vez do build atual.
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
         self.end_headers()
         self.wfile.write(body)
 

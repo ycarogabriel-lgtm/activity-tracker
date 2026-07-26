@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 SCRIPT_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
@@ -325,6 +326,16 @@ class AppApi:
         tracker.set_ignored_processes(cleaned)
         return True
 
+    def add_ignored_process(self, name):
+        import tracker
+        name = (name or "").strip()
+        if not name:
+            return sorted(tracker.get_ignored_processes())
+        current = tracker.get_ignored_processes()
+        current.add(name.lower())
+        tracker.set_ignored_processes(sorted(current))
+        return True
+
     def uninstall(self, delete_data=False):
         """
         Remove autostart, encerra o daemon em segundo plano e apaga o app
@@ -423,7 +434,9 @@ def main():
     if server is not None:
         webview.create_window(
             "Activity Tracker",
-            url=f"http://127.0.0.1:{port}/",
+            # ?v= evita que o WKWebView sirva uma versão em cache da página
+            # entre uma abertura e outra do app.
+            url=f"http://127.0.0.1:{port}/?v={int(time.time())}",
             js_api=AppApi(),
             width=1300,
             height=820,

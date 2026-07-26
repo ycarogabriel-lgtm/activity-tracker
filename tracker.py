@@ -8,6 +8,7 @@ import json
 import time
 import os
 import re
+import shutil
 import sys
 import subprocess
 import uuid
@@ -392,7 +393,7 @@ def _get_all_windows_macos() -> list:
     """
     script = '''
 tell application "System Events"
-    set outLines to {}
+    set resultList to {}
     set frontAppName to ""
     try
         set frontAppName to name of first application process whose frontmost is true
@@ -407,14 +408,14 @@ tell application "System Events"
                 else
                     set fg to "0"
                 end if
-                set end of outLines to procName & "|~|" & winName & "|~|" & fg
+                set end of resultList to procName & "|~|" & winName & "|~|" & fg
             end repeat
         end try
     end repeat
     set AppleScript's text item delimiters to "|##|"
-    set outStr to outLines as string
+    set resultStr to resultList as string
     set AppleScript's text item delimiters to ""
-    return outStr
+    return resultStr
 end tell'''
     try:
         result = subprocess.run(
@@ -501,8 +502,7 @@ def load_tracker_settings() -> dict:
 
 
 def save_tracker_settings(settings: dict):
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(settings, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(SETTINGS_FILE, settings, ensure_ascii=False, indent=2)
 
 
 def get_ignored_processes() -> set:
@@ -517,11 +517,19 @@ def set_ignored_processes(names: list):
 
 # ─── Motor de sessões (agrupa por processo+assunto, com fg/bg contínuos) ──────
 
+MAX_MISSES = 3  # polls seguidos sem ver a janela (~15-20s) tolerados antes de fechar a sessão
+
+
+def _public_session(sess: dict) -> dict:
+    """Remove campos internos (ex: contador de misses) antes de persistir."""
+    return {k: v for k, v in sess.items() if not k.startswith("_")}
+
+
 def _flush_session(sess: dict):
     """Grava uma sessão encerrada como 1 linha no arquivo JSONL."""
     try:
         with open(SESSIONS_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps(sess, ensure_ascii=False) + "\n")
+            f.write(json.dumps(_public_session(sess), ensure_ascii=False) + "\n")
     except Exception as e:
         print(f"[ERRO] Falha ao gravar sessão: {e}")
 
@@ -529,10 +537,11 @@ def _flush_session(sess: dict):
 def _checkpoint_active(active_sessions: dict):
     """Sobrescreve o snapshot das sessões em aberto (arquivo pequeno, barato
     de reescrever a cada poll — protege contra perda de dados em caso de
-    crash ou queda de energia)."""
+    crash ou queda de energia). Escrita atômica: como isso roda a cada poll,
+    é o arquivo com maior risco de corrupção se o processo for morto no meio
+    da escrita."""
     try:
-        with open(ACTIVE_SESSIONS_FILE, "w", encoding="utf-8") as f:
-            json.dump(list(active_sessions.values()), f, ensure_ascii=False, indent=2)
+        _atomic_write_json(ACTIVE_SESSIONS_FILE, [_public_session(s) for s in active_sessions.values()], ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[ERRO] Falha ao salvar checkpoint de sessões: {e}")
 
@@ -592,6 +601,7 @@ def capture_multi_window(active_sessions: dict, ignored: set):
             }
             active_sessions[key] = sess
 
+        sess["_misses"] = 0
         sess["end"] = now_iso
         sess["total_seconds"] += INTERVAL_SECONDS
 
@@ -603,7 +613,18 @@ def capture_multi_window(active_sessions: dict, ignored: set):
             else:
                 ranges.append([now_iso, now_iso])
 
-    closed_keys = [k for k in active_sessions if k not in seen_keys]
+    # Uma janela pode sumir de UM poll por instabilidade do AppleScript (e não
+    # porque foi realmente fechada) — em vez de fechar a sessão na hora, dá
+    # alguns polls de tolerância. Isso evita fragmentar o mesmo app em dezenas
+    # de sessõezinhas quando o System Events falha em listar algo por um poll.
+    closed_keys = []
+    for key, sess in active_sessions.items():
+        if key in seen_keys:
+            continue
+        sess["_misses"] = sess.get("_misses", 0) + 1
+        if sess["_misses"] > MAX_MISSES:
+            closed_keys.append(key)
+
     for k in closed_keys:
         _flush_session(active_sessions.pop(k))
 
@@ -612,12 +633,36 @@ def capture_multi_window(active_sessions: dict, ignored: set):
 
 # ─── Gerenciamento do log JSON ────────────────────────────────────────────────
 
+def _atomic_write_json(path: Path, data, **json_kwargs):
+    """Escreve em um arquivo temporário e troca com os.replace() (atômico no
+    POSIX/Windows). Evita que um kill/crash no meio da escrita deixe o
+    arquivo corrompido — o que antes causava perda silenciosa de todo o
+    histórico (load_log() via JSON inválido -> [] -> recomeça do zero)."""
+    tmp = path.parent / f".{path.name}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, **json_kwargs)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
 def load_log() -> list:
     if LOG_FILE.exists():
         try:
             with open(LOG_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
+        except Exception as e:
+            print(f"[ERRO] {LOG_FILE.name} corrompido ({e}) — tentando backup...")
+            bak = LOG_FILE.parent / f"{LOG_FILE.name}.bak"
+            if bak.exists():
+                try:
+                    with open(bak, "r", encoding="utf-8") as f:
+                        records = json.load(f)
+                    print(f"[OK] Recuperado do backup: {len(records)} registros.")
+                    return records
+                except Exception:
+                    pass
+            print("[ERRO] Sem backup válido — histórico anterior perdido.")
             return []
     return []
 
@@ -626,8 +671,17 @@ def save_log(records: list):
     # Mantém apenas os últimos MAX_RECORDS registros
     if len(records) > MAX_RECORDS:
         records = records[-MAX_RECORDS:]
-    with open(LOG_FILE, "w", encoding="utf-8") as f:
-        json.dump(records, f, ensure_ascii=False, indent=2)
+    # Backup rotativo: só sobrescreve o .bak se o arquivo atual for válido,
+    # pra sempre ter uma cópia íntegra recente pra recuperar em caso de
+    # corrupção (disco cheio, queda de energia, etc).
+    if LOG_FILE.exists():
+        try:
+            with open(LOG_FILE, "r", encoding="utf-8") as f:
+                json.load(f)
+            shutil.copy2(LOG_FILE, LOG_FILE.parent / f"{LOG_FILE.name}.bak")
+        except Exception:
+            pass
+    _atomic_write_json(LOG_FILE, records, ensure_ascii=False, indent=2)
 
 
 def should_record(new_entry: dict, records: list) -> bool:
