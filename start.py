@@ -403,62 +403,94 @@ class AppApi:
         os._exit(0)
 
 
+def _acquire_gui_lock() -> bool:
+    """
+    Evita abrir 2 janelas (2 ícones no Dock) quando o usuário clica de novo
+    no app antes da primeira janela aparecer — comum em apps PyInstaller,
+    que levam um instante pra iniciar. Reaproveita a mesma pasta de dados e
+    lógica de detecção de processo do lock do tracker.
+    """
+    import tracker
+    lock_file = tracker.SCRIPT_DIR / "gui.lock"
+    if lock_file.exists():
+        try:
+            pid = int(lock_file.read_text().strip())
+            if tracker._pid_running(pid):
+                return False
+        except Exception:
+            pass
+    lock_file.write_text(str(os.getpid()))
+    return True
+
+
+def _release_gui_lock():
+    import tracker
+    (tracker.SCRIPT_DIR / "gui.lock").unlink(missing_ok=True)
+
+
 def main():
     print("=" * 60)
     print("  Activity Tracker - Iniciando...")
     print("=" * 60)
 
-    check_dependencies()
+    if not _acquire_gui_lock():
+        print("[INFO] Já existe uma janela do Activity Tracker aberta. Encerrando esta instância.")
+        return
 
-    # Tracker em thread daemon
-    from tracker import main as tracker_main
-    threading.Thread(target=tracker_main, daemon=True, name="TrackerThread").start()
-    print("[OK] Rastreador iniciado")
+    try:
+        check_dependencies()
 
-    # Lembretes em thread daemon
-    from reminder import start_reminder_thread
-    start_reminder_thread()
-    print("[OK] Lembretes ativados")
+        # Tracker em thread daemon
+        from tracker import main as tracker_main
+        threading.Thread(target=tracker_main, daemon=True, name="TrackerThread").start()
+        print("[OK] Rastreador iniciado")
 
-    # Servidor HTTP: a janela principal carrega a UI por aqui (em vez de
-    # html= puro) porque o <script src="/vendor/fullcalendar.min.js"> só
-    # resolve com uma origem HTTP real por trás.
-    from server import start_server, HTML_TEMPLATE
-    server, port = start_server()
-    if server is not None:
-        threading.Thread(target=server.serve_forever, daemon=True, name="ServerThread").start()
+        # Lembretes em thread daemon
+        from reminder import start_reminder_thread
+        start_reminder_thread()
+        print("[OK] Lembretes ativados")
 
-    print("[OK] Abrindo Activity Tracker...")
+        # Servidor HTTP: a janela principal carrega a UI por aqui (em vez de
+        # html= puro) porque o <script src="/vendor/fullcalendar.min.js"> só
+        # resolve com uma origem HTTP real por trás.
+        from server import start_server, HTML_TEMPLATE
+        server, port = start_server()
+        if server is not None:
+            threading.Thread(target=server.serve_forever, daemon=True, name="ServerThread").start()
 
-    import webview
-    if server is not None:
-        webview.create_window(
-            "Activity Tracker",
-            # ?v= evita que o WKWebView sirva uma versão em cache da página
-            # entre uma abertura e outra do app.
-            url=f"http://127.0.0.1:{port}/?v={int(time.time())}",
-            js_api=AppApi(),
-            width=1300,
-            height=820,
-            min_size=(900, 600),
-            text_select=True,
-        )
-    else:
-        # Fallback se nenhuma porta local ficou livre: perde o calendário
-        # semanal (depende do vendor servido via HTTP), mas o resto do app
-        # continua funcionando.
-        webview.create_window(
-            "Activity Tracker",
-            html=HTML_TEMPLATE,
-            js_api=AppApi(),
-            width=1300,
-            height=820,
-            min_size=(900, 600),
-            text_select=True,
-        )
-    webview.start()
+        print("[OK] Abrindo Activity Tracker...")
 
-    print("[INFO] Encerrado.")
+        import webview
+        if server is not None:
+            webview.create_window(
+                "Activity Tracker",
+                # ?v= evita que o WKWebView sirva uma versão em cache da página
+                # entre uma abertura e outra do app.
+                url=f"http://127.0.0.1:{port}/?v={int(time.time())}",
+                js_api=AppApi(),
+                width=1300,
+                height=820,
+                min_size=(900, 600),
+                text_select=True,
+            )
+        else:
+            # Fallback se nenhuma porta local ficou livre: perde o calendário
+            # semanal (depende do vendor servido via HTTP), mas o resto do app
+            # continua funcionando.
+            webview.create_window(
+                "Activity Tracker",
+                html=HTML_TEMPLATE,
+                js_api=AppApi(),
+                width=1300,
+                height=820,
+                min_size=(900, 600),
+                text_select=True,
+            )
+        webview.start()
+
+        print("[INFO] Encerrado.")
+    finally:
+        _release_gui_lock()
 
 
 if __name__ == "__main__":

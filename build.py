@@ -123,7 +123,6 @@ def build():
 
     cmd = [
         sys.executable, "-m", "PyInstaller",
-        "--onefile",
         "--name", NAME,
         "--distpath", str(DIST),
         "--workpath", str(BUILD),
@@ -136,6 +135,15 @@ def build():
         "--collect-submodules", "keyring",
         "--add-data", f"{vendor_src}{add_data_sep}vendor",
     ]
+
+    # --onefile extrai tudo pra uma pasta temp a CADA execução, o que dá uma
+    # demora perceptível pra abrir — no macOS isso fazia o usuário clicar de
+    # novo por impaciência, abrindo uma segunda instância (2 ícones no Dock).
+    # --onedir (padrão do PyInstaller sem --onefile) já deixa tudo
+    # descompactado dentro do .app, abre bem mais rápido. Mantém --onefile só
+    # no Windows, onde um .exe único é mais prático de distribuir.
+    if sys.platform == "win32":
+        cmd.append("--onefile")
 
     if icon_path:
         cmd += ["--icon", icon_path]
