@@ -647,37 +647,26 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #week-calendar .fc-timegrid-slot, #week-calendar .fc-timegrid-col { border-color: var(--border-soft); }
   #week-calendar .fc-timegrid-now-indicator-line { border-color: var(--accent); }
   #week-calendar .fc-timegrid-now-indicator-arrow { border-color: var(--accent); color: var(--accent); }
-  /* Destaque sutil pra hora anterior/atual/seguinte — só sinaliza "é agora"
-     (o fundo da grade, não o bloco do evento em cima, que é posicionado à
-     parte). Um pouco mais alto que o normal, não um bloco enorme. */
+  /* Destaque sutil só da hora ATUAL (nenhuma vizinha) — sinaliza "é agora"
+     no fundo da grade. Recalibrado pra escala base nova (altura total do
+     calendário dobrou, então a base de cada hora já está bem maior). */
   #week-calendar .fc-timegrid-slot-lane.cal-hour-focus,
   #week-calendar .fc-timegrid-slot-label.cal-hour-focus { height: 45px !important; background: color-mix(in srgb, var(--accent) 6%, transparent); }
-  /* Linha da hora sob o evento em hover — cresce junto com o bloco do
-     evento (redimensionado à parte, via JS, no harness dele). */
+  /* Linha da hora sob o cursor no hover — mais alta que o destaque ambiente
+     da hora atual, é uma interação deliberada. */
   #week-calendar .fc-timegrid-slot-lane.cal-hour-hover,
-  #week-calendar .fc-timegrid-slot-label.cal-hour-hover { height: 72px !important; background: var(--surface-3); }
+  #week-calendar .fc-timegrid-slot-label.cal-hour-hover { height: 140px !important; background: var(--surface-3); }
   .fc-sess-event { position: relative; height: 100%; width: 100%; border-radius: 6px; overflow: hidden; padding: 1px; font-size: .65rem; color: #fff; cursor: pointer; transition: height .1s; }
-  /* Cartão flutuante com o texto completo ao passar o mouse num evento. Não
-     tenta redimensionar a grade do FullCalendar — os eventos são
-     posicionados por pixel numa camada própria (.fc-timegrid-col-events),
-     desacoplada da tabela de fundo, então crescer a linha da hora nunca
-     fazia o bloco do evento acompanhar (só a grade invisível atrás dele).
-     Anexado direto no <body> (não dentro do calendário), position:fixed —
-     assim escapa de qualquer overflow:hidden dos containers de scroll
-     internos do FullCalendar. */
-  #cal-hover-card {
-    position: fixed; z-index: 900; pointer-events: none;
-    background: var(--surface-glass);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
-    backdrop-filter: blur(20px) saturate(180%);
-    border: 1px solid var(--border); border-radius: 10px;
-    box-shadow: 0 12px 32px rgba(0,0,0,.4);
-    padding: 10px 14px; max-width: 320px;
-    font-size: 13px; color: var(--text); line-height: 1.4;
+  /* Cópia ampliada de um evento na hora sob o cursor — o bloco real não é
+     tocado (fica no tamanho/posição corretos, proporcionais ao tempo real).
+     Anexada direto no <body>, position:fixed — escapa de qualquer
+     overflow:hidden dos containers de scroll internos do FullCalendar. */
+  .cal-hour-lens {
+    position: fixed; z-index: 200; pointer-events: none;
+    box-shadow: 0 10px 28px rgba(0,0,0,.45);
+    font-size: .8rem !important;
   }
-  #cal-hover-card .chc-title { font-weight: 700; margin-bottom: 3px; }
-  #cal-hover-card .chc-time { font-family: var(--mono); font-size: 11.5px; color: var(--text-muted); }
-  #cal-hover-card.hidden { display: none; }
+  .cal-hour-lens .fc-sess-label { font-size: .8rem; }
   .fc-sess-bg { position: absolute; inset: 0; opacity: .18; }
   .fc-sess-fg { position: absolute; left: 0; right: 0; opacity: 1; }
   .fc-sess-content { position: relative; z-index: 1; background: rgba(10,10,12,.82); padding: 4px 7px; display: inline-block; max-width: 100%; border-radius: 0 0 6px 0; }
@@ -1300,7 +1289,6 @@ function renderTopPanel(title, details, cats, color1, color2) {
 let weekCalendar = null;
 let weekCalendarShownDate = null;
 let calFilterTerm = '';
-const EVENT_MIN_HEIGHT = 128;
 
 function initWeekCalendar() {
   if (weekCalendar || typeof FullCalendar === 'undefined') return;
@@ -1313,7 +1301,16 @@ function initWeekCalendar() {
     slotDuration: '01:00:00',
     expandRows: true,
     slotLabelFormat: { hour: '2-digit', minute: '2-digit', hour12: false },
-    height: 620,
+    // Dobrado (era 620) — a correção certa pra legibilidade é a ESCALA base
+    // da tabela inteira, não forçar altura em cada bloco de evento via JS
+    // (fizemos isso antes: um evento de 30min forçado pra 128px de altura
+    // virava visualmente 5+ horas de bloco, porque 128px não tinha relação
+    // nenhuma com a escala tempo→pixel real da grade — o evento aparecia
+    // "no horário errado" porque continuava desenhado no topo certo, só que
+    // enorme, invadindo as horas seguintes). Dobrar a altura total mantém a
+    // proporção tempo→pixel correta em todo o calendário, então cada evento
+    // cresce exatamente na medida certa pro tempo real que ele representa.
+    height: 1240,
     nowIndicator: true,
     allDaySlot: false,
     slotEventOverlap: false,
@@ -1326,14 +1323,6 @@ function initWeekCalendar() {
     eventClick: (info) => {
       const g = info.event.extendedProps.session;
       if (g) renderSessionModal(g);
-    },
-    // Altura mínima SEMPRE ativa (não só no hover) — eventos curtos viravam
-    // uma tira de ~11px, ilegível de cara, sem precisar interagir com nada.
-    eventDidMount: (info) => {
-      const harness = info.el.closest('.fc-timegrid-event-harness');
-      if (!harness) return;
-      const h = parseFloat(harness.style.height) || 0;
-      if (h < EVENT_MIN_HEIGHT) harness.style.height = EVENT_MIN_HEIGHT + 'px';
     },
   });
   weekCalendar.render();
@@ -1449,12 +1438,9 @@ function highlightCurrentHourRows() {
   el.querySelectorAll('.cal-hour-focus').forEach(n => n.classList.remove('cal-hour-focus'));
   const todayStr = new Date().toISOString().slice(0, 10);
   if (selectedDate !== todayStr) return;
-  const now = new Date();
-  const hours = [now.getHours() - 1, now.getHours(), now.getHours() + 1].filter(h => h >= 0 && h <= 23);
-  for (const h of hours) {
-    const t = String(h).padStart(2, '0') + ':00:00';
-    el.querySelectorAll(`[data-time="${t}"]`).forEach(n => n.classList.add('cal-hour-focus'));
-  }
+  // Só a hora atual — nada de hora anterior/seguinte junto.
+  const t = String(new Date().getHours()).padStart(2, '0') + ':00:00';
+  el.querySelectorAll(`[data-time="${t}"]`).forEach(n => n.classList.add('cal-hour-focus'));
 }
 
 // Cartão flutuante com o texto completo ao passar o mouse num evento —
@@ -1491,6 +1477,54 @@ function _refreshHourRowRects(el) {
   _hourRowRects = rects;
 }
 
+// Além de destacar a linha de fundo, mostra uma cópia AMPLIADA (clone,
+// position:fixed) de qualquer evento que passe pela hora sob o cursor —
+// isso é o "evento cresce" de verdade, sem tocar no bloco real (que
+// continua no tamanho/posição corretos, proporcionais ao tempo real —
+// crescer o bloco de verdade foi o que causou o bug de um evento de 30min
+// virar 5h de altura). O clone nunca sai da largura/posição horizontal do
+// evento original, só fica mais alto, centralizado na interseção com a
+// hora do cursor.
+let _hourLensEls = [];
+function _clearHourLens() {
+  _hourLensEls.forEach(n => n.remove());
+  _hourLensEls = [];
+}
+function _showHourLens(el, hourKey) {
+  _clearHourLens();
+  if (!hourKey) return;
+  const hourNum = parseInt(hourKey.slice(0, 2), 10);
+  const rowRect = _hourRowRects.find(r => r.t === hourKey);
+  if (!rowRect) return;
+  const lensHeight = 110;
+  el.querySelectorAll('.fc-sess-event').forEach((evEl) => {
+    const s = evEl._chcSession;
+    if (!s) return;
+    const startH = parseInt(s.start.slice(11, 13), 10);
+    const endMin = s.end.slice(14, 16);
+    let endH = parseInt(s.end.slice(11, 13), 10);
+    if (endMin === '00' && endH > startH) endH -= 1; // termina EXATAMENTE no início da hora seguinte: não ocupa nada dela
+    if (hourNum < startH || hourNum > endH) return;
+
+    const harness = evEl.closest('.fc-timegrid-event-harness');
+    if (!harness) return;
+    const harnessRect = harness.getBoundingClientRect();
+    const top = Math.max(rowRect.top, harnessRect.top);
+    const bottom = Math.min(rowRect.bottom, harnessRect.bottom);
+    const centerY = (top + bottom) / 2;
+
+    const clone = evEl.cloneNode(true);
+    clone.classList.add('cal-hour-lens');
+    clone.style.position = 'fixed';
+    clone.style.left = harnessRect.left + 'px';
+    clone.style.width = harnessRect.width + 'px';
+    clone.style.top = (centerY - lensHeight / 2) + 'px';
+    clone.style.height = lensHeight + 'px';
+    document.body.appendChild(clone);
+    _hourLensEls.push(clone);
+  });
+}
+
 function initHourRowHover(el) {
   el.addEventListener('mousemove', (e) => {
     _refreshHourRowRects(el);
@@ -1504,11 +1538,14 @@ function initHourRowHover(el) {
     if (t !== null) {
       el.querySelectorAll(`[data-time="${t}"]`).forEach(n => n.classList.add('cal-hour-hover'));
     }
+    _showHourLens(el, t);
   });
   el.addEventListener('mouseleave', () => {
-    if (_hoveredHour === null) return;
-    el.querySelectorAll(`[data-time="${_hoveredHour}"]`).forEach(n => n.classList.remove('cal-hour-hover'));
+    if (_hoveredHour !== null) {
+      el.querySelectorAll(`[data-time="${_hoveredHour}"]`).forEach(n => n.classList.remove('cal-hour-hover'));
+    }
     _hoveredHour = null;
+    _clearHourLens();
   });
 }
 
@@ -1516,41 +1553,6 @@ function initEventHoverCard() {
   const el = document.getElementById('week-calendar');
   if (!el) return;
   initHourRowHover(el);
-
-  const card = document.createElement('div');
-  card.id = 'cal-hover-card';
-  card.className = 'hidden';
-  document.body.appendChild(card);
-
-  el.addEventListener('mouseover', (e) => {
-    const target = e.target.closest('.fc-sess-event');
-    if (!target || card.dataset.forTarget === String(target._chcId)) return;
-    const s = target._chcSession;
-    if (!s) return;
-
-    const label = s.displayLabel || s.groupLabel || s.detail || s.process || '';
-    const range = `${s.start.slice(11, 16)}–${s.end.slice(11, 16)} · ${fmtDur(s.total_seconds)} no total, ${fmtDur(s.foreground_seconds)} em foco`;
-    card.innerHTML = `<div class="chc-title">${esc(label)}</div><div class="chc-time">${esc(range)}</div>`;
-    card.dataset.forTarget = String(target._chcId);
-
-    const r = target.getBoundingClientRect();
-    card.classList.remove('hidden');
-    const cardRect = card.getBoundingClientRect();
-    let left = r.left;
-    let top = r.bottom + 6;
-    if (left + cardRect.width > window.innerWidth - 12) left = window.innerWidth - cardRect.width - 12;
-    if (top + cardRect.height > window.innerHeight - 12) top = r.top - cardRect.height - 6;
-    card.style.left = Math.max(8, left) + 'px';
-    card.style.top = Math.max(8, top) + 'px';
-  });
-  el.addEventListener('mouseout', (e) => {
-    const leavingEvent = e.target.closest('.fc-sess-event');
-    if (!leavingEvent) return;
-    const to = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('.fc-sess-event') : null;
-    if (to === leavingEvent) return;
-    card.classList.add('hidden');
-    delete card.dataset.forTarget;
-  });
 }
 
 // ── Views (sidebar) ─────────────────────────────────────────────────────────
