@@ -21,7 +21,17 @@ Baixe a versão mais recente em [**Releases**](https://github.com/ycarogabriel-l
 
 ### Primeira abertura
 
-O app já sai assinado (ad-hoc, sem certificado de Developer ID — isso exigiria conta paga da Apple) automaticamente no build, o que evita o erro de "app está corrompido". Mas o Gatekeeper do macOS ainda bloqueia apps baixados da internet que não são notarizados pela Apple. Na primeira vez:
+O `.dmg` já sai assinado (ad-hoc, sem certificado de Developer ID — isso exigiria conta paga da Apple) no build, mas isso é assinado na máquina que compilou, não na sua — o Gatekeeper do macOS ainda bloqueia o app na primeira vez porque ele foi baixado da internet. A assinatura que resolve isso de verdade é feita **no seu próprio Mac**, depois que o app já está na pasta Applications. Abra o Terminal e cole:
+
+```bash
+xattr -cr /Applications/ActivityTracker.app
+codesign --force --deep --sign - /Applications/ActivityTracker.app
+```
+
+Depois é só abrir com duplo clique normalmente, sem nenhum aviso.
+
+<details>
+<summary>Prefere sem usar o Terminal?</summary>
 
 1. Tente abrir o `ActivityTracker.app` com duplo clique
 2. Aparecerá um aviso dizendo que o app não pode ser aberto — clique **OK** ou **Concluído**
@@ -29,21 +39,11 @@ O app já sai assinado (ad-hoc, sem certificado de Developer ID — isso exigiri
 4. Role para baixo até encontrar a mensagem _"ActivityTracker foi bloqueado"_ e clique em **Abrir Mesmo Assim**
 5. Confirme com sua senha ou Touch ID
 
-A partir daí o app abre normalmente com duplo clique.
-
 > **macOS Sequoia (15+):** o método de botão direito → Abrir foi removido. O único fluxo é pelo menu Privacidade e Segurança acima.
 
+</details>
+
 Na primeira vez que o app tentar ler a janela ativa, o macOS também vai pedir permissão de **Acessibilidade** — clique em **Permitir**. Isso só é pedido uma vez por instalação (não precisa repetir a cada abertura).
-
-### Alternativa via Terminal (abre sem nenhum aviso)
-
-Entre na pasta onde está o `ActivityTracker.app` pelo Terminal (ex: `cd /Applications`) e execute uma vez:
-```bash
-xattr -cr ActivityTracker.app
-codesign --force --deep --sign - ActivityTracker.app
-```
-
-Depois é só dar duplo clique normalmente.
 
 ### Rastrear em segundo plano
 
