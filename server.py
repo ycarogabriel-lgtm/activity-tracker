@@ -471,12 +471,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     border-radius: 16px;
     box-shadow: 0 8px 28px rgba(0,0,0,.28);
     display: flex; flex-direction: column; padding: 18px 12px;
-    margin: 12px 0 12px 12px;
-    /* Fixa na janela o tempo todo (igual Mail/Finder) — o conteúdo principal
-       é praticamente sempre mais alto que a tela (calendário de 24h), então
-       "só até a altura do conteúdo" na prática nunca deixava ela realmente
-       fixa: descolava e "subia" assim que a página tinha qualquer scroll. */
-    position: fixed; top: 12px; bottom: 12px;
+    margin: 13px;
+    position: fixed; top: 0; bottom: 0;
     transition: width .16s ease, margin .16s ease, padding .16s ease, opacity .12s ease;
     overflow: hidden;
   }
@@ -486,9 +482,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .sidebar-logo { padding: 4px 8px 22px; display: block; max-width: 100%; overflow: hidden; }
   .sidebar-logo svg { display: block; height: 16px; width: auto; max-width: 100%; color: var(--text); }
   .side-nav { display: flex; flex-direction: column; gap: 2px; }
+  /* Mesmo espaçamento (padding, min-height) dos botões da toolbar — dois
+     paddings diferentes pra elementos clicáveis do mesmo tipo (padding/
+     altura) não faziam sentido dentro do mesmo app. */
   .side-item {
     display: flex; align-items: center; gap: 10px; width: 100%;
-    padding: 7px 10px; border-radius: 8px; background: none; border: none;
+    padding: 7px 14px; min-height: 32px; box-sizing: border-box;
+    border-radius: 8px; background: none; border: none;
     color: var(--text-dim); font-size: 13.5px; font-weight: 600; font-family: var(--sans);
     text-align: left; cursor: pointer;
   }
@@ -501,7 +501,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   /* Sidebar é fixed (fora do fluxo) — reserva o espaço dela aqui manualmente
      (208px + 12px de margem dos dois lados). Recolhe quando ela fecha. */
-  .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; margin-left: 232px; transition: margin-left .16s ease; }
+  .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; margin-left: 234px; transition: margin-left .16s ease; }
   .sidebar.sidebar-closed + .main-col { margin-left: 0; }
   /* Só agrupamento em linha — sem caixa, sem vidro, sem borda própria aqui.
      Os botões é que flutuam soltos (vidro + sombra ficam neles, não numa
@@ -606,26 +606,35 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .panel { background: var(--surface); border: 1px solid var(--border-soft); border-radius: 14px; padding: 16px; }
   .panel-title { font-size: 12.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 14px; }
 
-  /* Summary cards */
-  .summary-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 20px; }
-  @media(max-width:1000px){ .summary-grid{grid-template-columns:repeat(3,1fr);} }
-  @media(max-width:560px){ .summary-grid{grid-template-columns:repeat(2,1fr);} }
-  .summary-card { background: var(--surface); border: 1px solid var(--border-soft); border-radius: 12px; padding: 14px 16px; }
-  .summary-card .label { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 8px; font-weight: 600; }
-  .summary-card .value { font-family: var(--mono); font-size: 22px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; color: var(--text); }
-  .summary-card .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  /* Resumo — hero (tempo ativo hoje) + grade 2x2 de métricas secundárias,
+     igual à proposta de redesign: superfície plana (sem vidro — vidro é só
+     pra sidebar/toolbar/modal, que ficam por cima de conteúdo colorido). */
   .dot-meeting { background: var(--cat-meeting); } .dot-chat { background: var(--cat-chat); }
   .dot-browser { background: var(--accent); } .dot-app { background: var(--cat-app); }
   .dot-idle { background: var(--cat-idle); } .dot-active { background: var(--accent); }
 
-  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  .hero-row { display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; margin-bottom: 32px; }
+  @media(max-width:760px){ .hero-row{grid-template-columns:1fr;} }
+  .hero-card { background: var(--surface); border: 1px solid var(--border-soft); border-radius: 16px; padding: 28px; }
+  .hero-label { font-size: 13px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; }
+  .hero-value { font-family: var(--mono); font-size: 56px; font-weight: 700; color: var(--accent); margin-top: 10px; line-height: 1; font-variant-numeric: tabular-nums; }
+  .hero-sub { color: var(--text-dim); font-size: 13.5px; margin-top: 12px; }
+
+  .stat-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  .stat { background: var(--surface); border: 1px solid var(--border-soft); border-radius: 12px; padding: 16px; }
+  .stat-label { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-muted); font-weight: 600; }
+  .stat-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+  .stat-value { font-family: var(--mono); font-size: 25px; font-weight: 700; margin-top: 8px; font-variant-numeric: tabular-nums; color: var(--text); }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-top: 32px; }
   @media(max-width:760px){ .two-col{grid-template-columns:1fr;} }
-  .top-item { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border-soft); }
+  .two-col-title { font-size: 14px; font-weight: 700; margin-bottom: 12px; color: var(--text); }
+  .top-item { display: flex; align-items: center; gap: 14px; padding: 11px 0; border-bottom: 1px solid var(--border-soft); }
   .top-item:last-child { border-bottom: none; }
-  .top-item .name { width: 170px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+  .top-item .name { width: 170px; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
   .top-item .bar-wrap { flex: 1; background: var(--surface-2); border-radius: 4px; height: 6px; overflow: hidden; }
   .top-item .bar { height: 100%; border-radius: 4px; }
-  .top-item .dur { font-family: var(--mono); font-size: 12.5px; color: var(--text-dim); width: 54px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .top-item .dur { font-family: var(--mono); font-size: 13px; color: var(--text-dim); width: 56px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
 
   .chart-wrap { margin-bottom: 20px; }
   .chart-bars { display: flex; gap: 3px; height: 80px; padding: 0 4px; }
@@ -647,26 +656,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #week-calendar .fc-timegrid-slot, #week-calendar .fc-timegrid-col { border-color: var(--border-soft); }
   #week-calendar .fc-timegrid-now-indicator-line { border-color: var(--accent); }
   #week-calendar .fc-timegrid-now-indicator-arrow { border-color: var(--accent); color: var(--accent); }
-  /* Destaque sutil só da hora ATUAL (nenhuma vizinha) — sinaliza "é agora"
-     no fundo da grade. Recalibrado pra escala base nova (altura total do
-     calendário dobrou, então a base de cada hora já está bem maior). */
+  /* Destaque só de cor (sem mexer em altura — tentamos redimensionar a
+     célula real do FullCalendar via CSS e provou ser instável com
+     expandRows:true, o valor nunca batia com o declarado de forma
+     confiável). Ambiente pra hora atual, um pouco mais forte no hover. */
   #week-calendar .fc-timegrid-slot-lane.cal-hour-focus,
-  #week-calendar .fc-timegrid-slot-label.cal-hour-focus { height: 45px !important; background: color-mix(in srgb, var(--accent) 6%, transparent); }
-  /* Linha da hora sob o cursor no hover — mais alta que o destaque ambiente
-     da hora atual, é uma interação deliberada. */
+  #week-calendar .fc-timegrid-slot-label.cal-hour-focus { background: color-mix(in srgb, var(--accent) 6%, transparent); }
   #week-calendar .fc-timegrid-slot-lane.cal-hour-hover,
-  #week-calendar .fc-timegrid-slot-label.cal-hour-hover { height: 140px !important; background: var(--surface-3); }
-  .fc-sess-event { position: relative; height: 100%; width: 100%; border-radius: 6px; overflow: hidden; padding: 1px; font-size: .65rem; color: #fff; cursor: pointer; transition: height .1s; }
-  /* Cópia ampliada de um evento na hora sob o cursor — o bloco real não é
-     tocado (fica no tamanho/posição corretos, proporcionais ao tempo real).
-     Anexada direto no <body>, position:fixed — escapa de qualquer
-     overflow:hidden dos containers de scroll internos do FullCalendar. */
-  .cal-hour-lens {
-    position: fixed; z-index: 200; pointer-events: none;
-    box-shadow: 0 10px 28px rgba(0,0,0,.45);
-    font-size: .8rem !important;
-  }
-  .cal-hour-lens .fc-sess-label { font-size: .8rem; }
+  #week-calendar .fc-timegrid-slot-label.cal-hour-hover { background: var(--surface-3); }
+  .fc-sess-event { position: relative; height: 100%; width: 100%; border-radius: 6px; overflow: hidden; padding: 1px; font-size: .65rem; color: #fff; cursor: pointer; }
   .fc-sess-bg { position: absolute; inset: 0; opacity: .18; }
   .fc-sess-fg { position: absolute; left: 0; right: 0; opacity: 1; }
   .fc-sess-content { position: relative; z-index: 1; background: rgba(10,10,12,.82); padding: 4px 7px; display: inline-block; max-width: 100%; border-radius: 0 0 6px 0; }
@@ -711,41 +709,98 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     backdrop-filter: blur(6px);
   }
   .modal-overlay.hidden { display: none; }
+  /* Altura fixa (não max-height por conteúdo) — trocar de aba não pode mudar
+     o tamanho da janela, só o que aparece dentro dela. Cada painel de aba
+     cuida do próprio scroll interno se precisar (.modal-tab-panel). */
   .modal-card {
     position: relative; background: var(--surface-glass);
     -webkit-backdrop-filter: blur(30px) saturate(180%);
     backdrop-filter: blur(30px) saturate(180%);
     border: 1px solid var(--border);
     box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 24px 60px rgba(0,0,0,.35);
-    border-radius: 18px; padding: 26px; width: min(640px, 92vw); max-height: 86vh; overflow-y: auto;
+    border-radius: 18px; padding: 26px; width: min(640px, 92vw); height: min(520px, 86vh);
+    display: flex; flex-direction: column; overflow: hidden;
   }
+  /* #modal-body precisa ser flex column também — sem isso os filhos
+     (.modal-head/.modal-tabs/.modal-tab-panel) não têm um container flex de
+     verdade pra distribuir o espaço, e o painel de aba não estica nem rola:
+     conteúdo que passa da altura fixa do card fica cortado, inacessível. */
+  #modal-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .modal-tab-panel { flex: 1; min-height: 0; overflow-y: auto; }
   .modal-close { position: absolute; top: 16px; right: 16px; }
-  .modal-title { font-size: 17px; font-weight: 700; padding-right: 30px; }
+  .modal-delete-trigger { position: absolute; top: 16px; right: 58px; color: var(--danger); }
+  .modal-head { padding-right: 92px; flex-shrink: 0; }
+  .modal-title { font-size: 17px; font-weight: 700; }
   .modal-sub { font-family: var(--mono); font-size: 12px; color: var(--text-muted); margin-top: 6px; line-height: 1.6; }
   .modal-section { border-top: 1px solid var(--border-soft); margin-top: 18px; padding-top: 18px; }
+  .modal-section:first-child { border-top: none; margin-top: 0; padding-top: 0; }
   .modal-section-head { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 10px; }
   .modal-section-head svg { color: var(--accent); width: 15px; height: 15px; }
-  .modal-danger .modal-section-head svg { color: var(--danger); }
   .modal-input { width: 100%; box-sizing: border-box; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 9px 12px; font-size: 13.5px; font-family: var(--sans); }
   .modal-send-row { display: flex; gap: 8px; align-items: center; }
   .modal-hint { font-size: 11.5px; color: var(--text-muted); margin-top: 6px; }
   .modal-check { display: flex; align-items: flex-start; gap: 7px; font-size: 12.5px; color: var(--text-dim); margin-top: 10px; cursor: pointer; }
 
+  /* Confirmação de exclusão inline (não é mais uma seção/aba própria — o
+     ícone de lixeira no cabeçalho já resolve, sem precisar de espaço fixo
+     dedicado a uma ação que só acontece às vezes). */
+  .modal-delete-confirm { background: var(--surface-2); border: 1px solid var(--danger-border); border-radius: 10px; padding: 12px 14px; margin: 14px 0; flex-shrink: 0; }
+  .modal-error { background: color-mix(in srgb, var(--danger) 14%, var(--surface-2)); border: 1px solid var(--danger-border); color: var(--danger); border-radius: 8px; padding: 10px 12px; font-size: 12.5px; margin-top: 14px; flex-shrink: 0; }
+  .modal-delete-text { font-size: 12.5px; color: var(--text-dim); margin-bottom: 10px; }
+  .modal-delete-actions { display: flex; gap: 8px; }
+  .modal-delete-actions .btn { flex: 1; justify-content: center; }
+
+  .modal-tabs { margin: 16px 0; width: 100%; flex-shrink: 0; }
+  .modal-tabs .seg-btn { flex: 1; text-align: center; }
+
+  /* Switch de rastrear/parar — independente de excluir: mantém o histórico
+     já registrado, só para de capturar coisa nova daqui pra frente. */
+  .modal-track-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; cursor: pointer; }
+  .modal-track-row strong { display: block; font-size: 13px; }
+  .modal-track-row span { display: block; font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
+
+  /* Grupo é uma entidade de verdade (junta atividades diferentes), não um
+     campo de texto solto — na prática são poucos grupos por vez (2-3
+     projetos), então é uma LISTA pra escolher, não um campo pra digitar. */
+  .modal-group-list { display: flex; flex-direction: column; gap: 6px; }
+  .modal-group-option {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    width: 100%; background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: 8px;
+    padding: 11px 14px; font-size: 13.5px; font-family: var(--sans); color: var(--text-dim); cursor: pointer;
+    text-align: left; transition: background .1s, border-color .1s, color .1s;
+  }
+  .modal-group-option:hover { background: var(--surface-3); color: var(--text); }
+  .modal-group-option.active { background: color-mix(in srgb, var(--accent) 14%, var(--surface-2)); border-color: var(--accent); color: var(--text); font-weight: 600; }
+  .modal-group-option svg { width: 15px; height: 15px; color: var(--accent); flex-shrink: 0; }
+  .modal-group-create { margin-top: 10px; }
+  .modal-group-create-toggle { background: none; border: none; color: var(--text-muted); font-size: 12.5px; font-family: var(--sans); cursor: pointer; padding: 4px 0; }
+  .modal-group-create-toggle:hover { color: var(--text-dim); }
+  .modal-group-members { display: flex; flex-direction: column; gap: 4px; }
+  .modal-group-member { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; color: var(--text-dim); padding: 6px 10px; background: var(--surface-2); border-radius: 6px; }
+
   /* Ocorrências agrupadas por proximidade (>=15min de intervalo real vira um
-     cluster novo) — colapsadas por padrão, lista de texto simples (sem
-     timeline visual), não a parede de dezenas de linhas de antes. */
-  .occ-clusters { margin-top: 10px; max-height: 220px; overflow-y: auto; border: 1px solid var(--border-soft); border-radius: 10px; }
+     cluster novo) — colapsadas por padrão, lista de texto simples, não a
+     parede de dezenas de linhas de antes. */
+  .occ-clusters { max-height: 320px; overflow-y: auto; border: 1px solid var(--border-soft); border-radius: 10px; }
   .occ-cluster { border-top: 1px solid var(--border-soft); }
   .occ-cluster:first-child { border-top: none; }
   .occ-cluster-head {
-    width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    width: 100%; display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
     background: none; border: none; color: var(--text-dim); font-family: var(--mono); font-size: 12px;
     padding: 8px 10px; cursor: pointer; text-align: left;
   }
   .occ-cluster-head:hover { background: var(--surface-2); color: var(--text); }
-  .occ-chevron { flex-shrink: 0; transition: transform .12s; color: var(--text-muted) !important; }
+  .occ-cluster-head-main { flex: 1; min-width: 0; }
+  .occ-chevron { flex-shrink: 0; margin-top: 1px; transition: transform .12s; color: var(--text-muted) !important; }
   .occ-cluster-body { padding: 0 10px 8px 20px; font-family: var(--mono); font-size: 11.5px; color: var(--text-muted); }
-  .occ-row { padding: 2px 0; }
+  .occ-row { padding: 4px 0; }
+
+  /* Mesma linguagem visual do bloco do calendário (fundo fraco = só aberto,
+     trecho cheio = em foco de verdade) — só que como uma barra horizontal
+     fina, pra caber numa linha de texto em vez de um bloco de tempo. */
+  .occ-focus-bar { position: relative; height: 4px; border-radius: 2px; background: var(--surface-3); overflow: hidden; margin-top: 5px; }
+  .occ-focus-bg { position: absolute; inset: 0; opacity: .18; }
+  .occ-focus-fg { position: absolute; top: 0; bottom: 0; opacity: 1; }
 </style>
 </head>
 <body>
@@ -911,6 +966,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <div id="session-modal-overlay" class="modal-overlay hidden" onclick="if(event.target===this)closeSessionModal()">
   <div class="modal-card">
+    <button class="btn-icon modal-delete-trigger" aria-label="Excluir" onclick="toggleModalDeleteConfirm()"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg></button>
     <button class="btn-icon modal-close" aria-label="Fechar" onclick="closeSessionModal()"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     <div id="modal-body"></div>
   </div>
@@ -1063,19 +1119,24 @@ function renderDay(d) {
 
   let html = '';
 
-  html += '<div class="summary-grid">';
-  const cards = [
-    { label: 'Tempo ativo', value: fmtDur(totalActive), dot: 'dot-active' },
-    { label: 'Reuniões Teams', value: fmtDur(totals.teams_meeting||0), dot: 'dot-meeting' },
-    { label: 'Chat Teams', value: fmtDur(totals.teams_chat||0), dot: 'dot-chat' },
-    { label: 'Navegador', value: fmtDur(totals.browser||0), dot: 'dot-browser' },
-    { label: 'Outros apps', value: fmtDur(totals.app||0), dot: 'dot-app' },
-    { label: 'Ocioso', value: fmtDur(totals.idle||0), dot: 'dot-idle' },
-  ];
-  for (const c of cards) {
-    html += `<div class="summary-card"><div class="label"><span class="dot ${c.dot}"></span>${c.label}</div><div class="value">${c.value}</div></div>`;
-  }
-  html += '</div>';
+  const idle = totals.idle || 0;
+  const trackedTotal = totalActive + idle;
+  const activePct = trackedTotal > 0 ? Math.round((totalActive / trackedTotal) * 100) : 0;
+  const trabalho = (totals.browser || 0) + (totals.app || 0);
+
+  html += `<div class="hero-row">
+    <div class="hero-card">
+      <div class="hero-label">Tempo ativo hoje</div>
+      <div class="hero-value">${fmtDur(totalActive)}</div>
+      <div class="hero-sub">${activePct}% do dia rastreado passou com alguma atividade em foco — pronto pra apontar no Tempo</div>
+    </div>
+    <div class="stat-grid">
+      <div class="stat"><div class="stat-label"><span class="stat-dot dot-meeting"></span>Reuniões</div><div class="stat-value">${totals.teams_meeting ? fmtDur(totals.teams_meeting) : '—'}</div></div>
+      <div class="stat"><div class="stat-label"><span class="stat-dot dot-chat"></span>Chat</div><div class="stat-value">${totals.teams_chat ? fmtDur(totals.teams_chat) : '—'}</div></div>
+      <div class="stat"><div class="stat-label"><span class="stat-dot dot-browser"></span>Trabalho</div><div class="stat-value">${trabalho ? fmtDur(trabalho) : '—'}</div></div>
+      <div class="stat"><div class="stat-label"><span class="stat-dot dot-idle"></span>Ocioso</div><div class="stat-value">${idle ? fmtDur(idle) : '—'}</div></div>
+    </div>
+  </div>`;
 
   const hours = Array.from({length: 13}, (_, i) => i + 7);
   const maxHourly = Math.max(...hours.map(h => hourly[h] || 0), 1);
@@ -1092,8 +1153,8 @@ function renderDay(d) {
   html += '</div></div>';
 
   html += '<div class="two-col">';
-  html += renderTopPanel('Reuniões & Chats Teams', summary.details, ['teams_meeting','teams_chat'], 'var(--cat-meeting)', 'var(--cat-chat)');
-  html += renderTopPanel('Navegador & Aplicativos', summary.details, ['browser','app'], 'var(--accent)', 'var(--cat-app)');
+  html += renderTopPanel('Reuniões e chats', summary.details, ['teams_meeting','teams_chat'], 'var(--cat-meeting)', 'var(--cat-chat)');
+  html += renderTopPanel('Navegador e aplicativos', summary.details, ['browser','app'], 'var(--accent)', 'var(--cat-app)');
   html += '</div>';
 
   document.getElementById('content').innerHTML = html;
@@ -1131,62 +1192,294 @@ function toggleOccCluster(i) {
   chevron.style.transform = nowHidden ? '' : 'rotate(180deg)';
 }
 
+// Mesma leitura visual do bloco do calendário (fundo fraco = só aberto,
+// trecho cheio = em foco de verdade), só que como barra horizontal fina
+// pra caber numa linha de texto na modal.
+function renderFocusBar(start, end, foregroundRanges, color) {
+  const startMs = new Date(start).getTime();
+  const endMs = new Date(end).getTime();
+  const totalMs = Math.max(endMs - startMs, 1000);
+  let fg = '';
+  for (const range of (foregroundRanges || [])) {
+    const fStart = new Date(range[0]).getTime();
+    const fEnd = new Date(range[1]).getTime();
+    const left = Math.max(((fStart - startMs) / totalMs) * 100, 0);
+    const width = Math.max(((fEnd - fStart) / totalMs) * 100, 1.5);
+    fg += `<div class="occ-focus-fg" style="left:${left}%;width:${width}%;background:${color}"></div>`;
+  }
+  return `<div class="occ-focus-bar"><div class="occ-focus-bg" style="background:${color}"></div>${fg}</div>`;
+}
+
+// A janela de teste no navegador comum não tem a ponte do pywebview — sem
+// isso, toda ação da modal (excluir, agrupar, código, rastrear) ficava
+// silenciosamente sem efeito nenhum, porque é assim que os guards
+// "typeof pywebview === 'undefined'" foram desenhados pra se comportar.
+// callApi tenta a API nativa primeiro e cai pra um endpoint HTTP equivalente
+// quando ela não existe, pra essas ações funcionarem de verdade também fora
+// do app empacotado.
+async function callApi(pywebviewFn, endpoint, body) {
+  if (typeof pywebview !== 'undefined' && pywebview.api) {
+    return await pywebviewFn();
+  }
+  const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  let data;
+  try { data = await res.json(); } catch { data = {}; }
+  if (!res.ok || data.ok === false) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+
+let modalErrorText = '';
+function renderModalError() {
+  if (!modalErrorText) return '';
+  return `<div class="modal-error">${esc(modalErrorText)}</div>`;
+}
+
+let modalTab = 'org';
+let modalDeleteConfirmOpen = false;
+// Nomes de processo que não estão mais sendo capturados (independe de
+// excluir dados já registrados) — carregado sob demanda, não em toda
+// renderização, porque é uma chamada assíncrona pra API do pywebview.
+let modalIgnoredProcesses = new Set();
+// Nomes de grupo já usados em QUALQUER atividade — é isso que torna o campo
+// de agrupamento útil de verdade: um grupo junta atividades DIFERENTES (não
+// é só renomear a atividade atual) — precisa mostrar quem mais já está no
+// grupo, não só um campo de texto solto que não deixa ver o resultado.
+let modalGroupOverrides = {}; // label_key -> nome do grupo
+let modalGroupNames = []; // nomes de grupo únicos, pra sugerir
+
+// "Chrome::browser::Site X" -> "Chrome — Site X" — só pra exibição, já que a
+// modal não tem acesso aos dados crus de outras atividades (só a chave).
+function friendlyFromKey(key) {
+  const parts = (key || '').split('::');
+  const process = parts[0] || '';
+  const detail = parts[2] || '';
+  if (process && detail && process !== detail) return `${process} — ${detail}`;
+  return detail || process || key;
+}
+
+async function refreshModalIgnoredState() {
+  try {
+    const list = typeof pywebview !== 'undefined' && pywebview.api
+      ? await pywebview.api.get_ignored_processes()
+      : await (await fetch('/api/ignored_processes')).json();
+    modalIgnoredProcesses = new Set((list || []).map(p => p.toLowerCase()));
+    if (currentModalRow) renderModalBody();
+  } catch (err) { /* não crítico pra abrir a modal */ }
+}
+
+async function refreshModalGroupNames() {
+  try {
+    modalGroupOverrides = (typeof pywebview !== 'undefined' && pywebview.api
+      ? await pywebview.api.get_group_overrides()
+      : await (await fetch('/api/group_overrides')).json()) || {};
+    modalGroupNames = [...new Set(Object.values(modalGroupOverrides))].sort();
+    if (currentModalRow) renderModalBody();
+  } catch (err) { /* não crítico pra abrir a modal */ }
+}
+
 function renderSessionModal(row) {
   currentModalRow = row;
-  const label = row.displayLabel || row.groupLabel || row.detail || row.process || '—';
-  const totalMin = Math.max(Math.round(row.total / 60), 1);
+  modalTab = 'org';
+  modalDeleteConfirmOpen = false;
+  modalErrorText = '';
+  renderModalBody();
+  document.getElementById('session-modal-overlay').classList.remove('hidden');
+  refreshModalIgnoredState();
+  refreshModalGroupNames();
+}
+
+function switchModalTab(name) {
+  modalTab = name;
+  renderModalBody();
+}
+
+function toggleModalDeleteConfirm() {
+  if (!currentModalRow) return;
+  modalDeleteConfirmOpen = !modalDeleteConfirmOpen;
+  renderModalBody();
+}
+
+async function toggleModalTracking() {
+  if (!currentModalRow) return;
+  const process = currentModalRow.process;
+  if (!process) return;
+  const isIgnored = modalIgnoredProcesses.has(process.toLowerCase());
+  try {
+    await callApi(
+      () => isIgnored ? pywebview.api.remove_ignored_process(process) : pywebview.api.add_ignored_process(process),
+      '/api/set_ignored_process',
+      { name: process, ignored: !isIgnored }
+    );
+    await refreshModalIgnoredState();
+  } catch (err) {
+    modalErrorText = 'Erro ao mudar rastreamento: ' + err.message;
+    renderModalBody();
+  }
+}
+
+// "Registros" — histórico de ocorrências dessa atividade, já abertas por
+// padrão (agora que a modal tem espaço de sobra com as abas). Junto, o
+// switch de rastrear: para de capturar coisa nova sem mexer no que já foi
+// registrado (diferente de excluir).
+function renderRecordsTab(row, color) {
+  const isIgnored = modalIgnoredProcesses.has((row.process || '').toLowerCase());
+  const trackRow = row.process ? `
+    <div class="modal-track-row" onclick="toggleModalTracking()">
+      <div>
+        <strong>Rastrear esta atividade</strong>
+        <span>${isIgnored ? 'Desativado — nada de novo está sendo registrado' : 'Ativo — continua sendo registrado normalmente'}</span>
+      </div>
+      <div class="toggle ${isIgnored ? '' : 'on'}"></div>
+    </div>` : '';
   const hm = (iso) => iso.slice(11, 16);
   const clusters = clusterOccurrences(row.items);
   const clustersHtml = clusters.map((c, i) => `
     <div class="occ-cluster">
       <button type="button" class="occ-cluster-head" onclick="toggleOccCluster(${i})">
-        <span>${hm(c.start)}–${hm(c.end)} · ${c.items.length} ocorrência${c.items.length > 1 ? 's' : ''} · ${fmtDur(c.foreground_seconds)} em foco</span>
-        <svg class="icon occ-chevron" id="occ-chevron-${i}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        <div class="occ-cluster-head-main">
+          <span>${hm(c.start)}–${hm(c.end)} · ${c.items.length} ocorrência${c.items.length > 1 ? 's' : ''} · ${fmtDur(c.foreground_seconds)} em foco</span>
+          ${renderFocusBar(c.start, c.end, c.items.flatMap(s => s.foreground_ranges || []), color)}
+        </div>
+        <svg class="icon occ-chevron" id="occ-chevron-${i}" style="transform:rotate(180deg)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
       </button>
-      <div class="occ-cluster-body hidden" id="occ-cluster-${i}">
-        ${c.items.map(s => `<div class="occ-row">${hm(s.start)}–${hm(s.end)} — ${fmtDur(s.total_seconds)} no total, ${fmtDur(s.foreground_seconds)} em foco</div>`).join('')}
+      <div class="occ-cluster-body" id="occ-cluster-${i}">
+        ${c.items.map(s => `
+          <div class="occ-row">
+            <div>${hm(s.start)}–${hm(s.end)} — ${fmtDur(s.total_seconds)} no total, ${fmtDur(s.foreground_seconds)} em foco</div>
+            ${renderFocusBar(s.start, s.end, s.foreground_ranges, color)}
+          </div>`).join('')}
       </div>
     </div>`).join('');
+  return `${trackRow}<div class="occ-clusters">${clustersHtml}</div>`;
+}
+
+function renderOrgTab(row, label) {
   const applyLabelRow = row.key ? `
     <label class="modal-check"><input type="checkbox" id="modal-apply-label"> <span>Usar esse código sempre que aparecer "<strong style="color:var(--text)">${esc(label.slice(0, 40))}</strong>" (inclusive em dias futuros)</span></label>` : '';
-
-  document.getElementById('modal-body').innerHTML = `
-    <div class="modal-title">${esc(label)}</div>
-    <div class="modal-sub">${row.items.length} ocorrência(s) — ${fmtDur(row.total)} no total</div>
-    <div class="occ-clusters">${clustersHtml}</div>
-
+  return `
     <div class="modal-section">
       <div class="modal-section-head"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41 12 22l-9-9V4a2 2 0 0 1 2-2h9l6.59 6.59a2 2 0 0 1 0 2.82z"/><circle cx="7.5" cy="7.5" r="1.5"/></svg> Código Jira / Tempo</div>
       <input id="modal-code" class="modal-input" value="${esc(row.code || '')}" placeholder="Ex: PROJ-123">
       ${applyLabelRow}
       <button class="btn" style="margin-top:10px;width:100%;justify-content:center;" onclick="saveModalCode()">Salvar código</button>
-    </div>
+      <div id="modal-code-status" class="modal-hint"></div>
+    </div>`;
+}
 
+// Grupo é uma entidade de verdade (junta atividades DIFERENTES pra apontar
+// hora junto), e na prática o usuário tem pouquíssimos grupos por vez (ex.:
+// 2-3 projetos por semana) — a interação certa é ESCOLHER de uma lista
+// curta, não digitar/lembrar um nome exato num campo de texto solto.
+function renderGroupTab(row, label) {
+  const currentGroup = row.groupLabel || null;
+  const otherMembers = currentGroup
+    ? Object.entries(modalGroupOverrides).filter(([k, v]) => v === currentGroup && k !== row.key)
+    : [];
+
+  const listHtml = modalGroupNames.length ? `
+    <div class="modal-group-list">
+      ${modalGroupNames.map(name => `
+        <button type="button" class="modal-group-option ${name === currentGroup ? 'active' : ''}" onclick="assignModalGroup(${JSON.stringify(name)})">
+          <span>${esc(name)}</span>
+          ${name === currentGroup ? '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>' : ''}
+        </button>`).join('')}
+    </div>` : `<div class="modal-hint" style="margin-top:0;">Nenhum grupo criado ainda — crie um abaixo.</div>`;
+
+  return `
     <div class="modal-section">
-      <div class="modal-section-head"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg> Agrupamento</div>
-      <div class="modal-hint" style="margin-top:0;margin-bottom:8px;">Atividades com o mesmo nome de grupo viram um bloco só no calendário. Por padrão agrupamos por app + categoria — mas você pode mudar (vale pras próximas vezes também).</div>
-      <input id="modal-group-name" class="modal-input" value="${esc(label)}" placeholder="Nome do grupo">
-      <button class="btn" style="margin-top:10px;width:100%;justify-content:center;" onclick="saveModalGroup()">Salvar nome do grupo</button>
-    </div>
+      <div class="modal-section-head"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg> Grupo</div>
+      <div class="modal-hint" style="margin-top:0;margin-bottom:10px;">Atividades diferentes no mesmo grupo viram uma coisa só — no calendário e pra apontar horas juntas.</div>
+      ${listHtml}
+      <div class="modal-group-create">
+        <button type="button" class="modal-group-create-toggle" onclick="this.nextElementSibling.classList.toggle('hidden')">+ Criar novo grupo</button>
+        <div class="hidden">
+          <input id="modal-group-name" class="modal-input" placeholder="Nome do novo grupo" style="margin-top:8px;">
+          <button class="btn" style="margin-top:8px;width:100%;justify-content:center;" onclick="saveModalGroup()">Criar e entrar</button>
+        </div>
+      </div>
+      <div id="modal-group-status" class="modal-hint"></div>
+      ${currentGroup && otherMembers.length ? `
+        <div class="modal-hint" style="margin-top:16px;margin-bottom:6px;">Outras atividades neste grupo:</div>
+        <div class="modal-group-members">
+          ${otherMembers.map(([k]) => `
+            <div class="modal-group-member">
+              <span>${esc(friendlyFromKey(k))}</span>
+              <button class="btn-icon" style="width:22px;height:22px;flex-shrink:0;" aria-label="Remover do grupo" onclick="ungroupModalMember(${JSON.stringify(k)})"><svg class="icon" style="width:11px;height:11px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+            </div>`).join('')}
+        </div>` : ''}
+    </div>`;
+}
 
+function renderSendTab(row, totalMin) {
+  return `
     <div class="modal-section">
       <div class="modal-section-head"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> Apontar no Tempo</div>
       <div class="modal-send-row">
         <input id="modal-send-code" class="modal-input" style="flex:2" placeholder="Issue (ex: PROJ-123)" value="${esc(row.code || '')}">
-        <input id="modal-send-minutes" class="modal-input" style="flex:1" type="number" min="1" value="${totalMin}">
-        <span style="color:var(--text-muted);font-size:12.5px;">min</span>
+        <input id="modal-send-minutes" class="modal-input" style="flex:1" type="number" min="0" step="any" value="${totalMin}" data-unit="min">
+        <select id="modal-send-unit" class="modal-input" style="flex:0 0 68px;padding:9px 8px;" onchange="onModalSendUnitChange()">
+          <option value="min">min</option>
+          <option value="h">h</option>
+        </select>
       </div>
       <button class="btn btn-primary" style="margin-top:10px;width:100%;justify-content:center;" onclick="sendModalWorklog()">Enviar apontamento</button>
       <div id="modal-status" class="modal-hint"></div>
+    </div>`;
+}
+
+function onModalSendUnitChange() {
+  const input = document.getElementById('modal-send-minutes');
+  const newUnit = document.getElementById('modal-send-unit').value;
+  const oldUnit = input.dataset.unit || 'min';
+  if (oldUnit === newUnit) return;
+  const raw = parseFloat((input.value || '0').replace(',', '.')) || 0;
+  const minutes = oldUnit === 'h' ? raw * 60 : raw;
+  input.value = newUnit === 'h' ? Math.round((minutes / 60) * 100) / 100 : Math.round(minutes);
+  input.dataset.unit = newUnit;
+}
+
+function renderModalBody() {
+  const row = currentModalRow;
+  if (!row) return;
+  const label = row.displayLabel || row.groupLabel || row.detail || row.process || '—';
+  const totalMin = Math.max(Math.round(row.total / 60), 1);
+  const color = catColor(row.category);
+
+  const tabHtml = modalTab === 'send' ? renderSendTab(row, totalMin)
+    : modalTab === 'grp' ? renderGroupTab(row, label)
+    : modalTab === 'rec' ? renderRecordsTab(row, color)
+    : renderOrgTab(row, label);
+
+  // Confirmação de exclusão trata só de excluir — o switch de rastrear já
+  // vive standalone em Registros; duplicar aqui misturava duas ações
+  // diferentes (apagar dados vs. pausar captura futura) no mesmo lugar.
+  const deleteConfirmHtml = modalDeleteConfirmOpen ? `
+    <div class="modal-delete-confirm">
+      <div class="modal-delete-text">Excluir "${esc(label)}" (${row.items.length} ocorrência(s))? Essa ação não pode ser desfeita.</div>
+      <div class="modal-delete-actions">
+        <button class="btn" onclick="toggleModalDeleteConfirm()">Cancelar</button>
+        <button class="btn" id="modal-delete-confirm-btn" style="border-color:var(--danger-border);color:var(--danger);" onclick="deleteModalSessions()">Excluir</button>
+      </div>
+    </div>` : '';
+
+  document.getElementById('modal-body').innerHTML = `
+    <div class="modal-head">
+      <div class="modal-title">${esc(label)}</div>
+      <div class="modal-sub">${row.items.length} ocorrência(s) — ${fmtDur(row.total)} no total</div>
     </div>
 
-    <div class="modal-section modal-danger">
-      <div class="modal-section-head"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg> Excluir</div>
-      <label class="modal-check"><input type="checkbox" id="modal-stop-tracking"> <span>Também parar de rastrear "<strong style="color:var(--text)">${esc((row.process || '').slice(0, 40))}</strong>" — reversível em Configurações → Apps ignorados</span></label>
-      <button class="btn" style="margin-top:10px;width:100%;justify-content:center;border-color:var(--danger-border);color:var(--danger);" onclick="deleteModalSessions()">Excluir esta atividade</button>
+    ${renderModalError()}
+    ${deleteConfirmHtml}
+
+    <div class="seg modal-tabs" role="tablist">
+      <button class="seg-btn ${modalTab === 'org' ? 'active' : ''}" onclick="switchModalTab('org')">Organizar</button>
+      <button class="seg-btn ${modalTab === 'send' ? 'active' : ''}" onclick="switchModalTab('send')">Apontar</button>
+      <button class="seg-btn ${modalTab === 'grp' ? 'active' : ''}" onclick="switchModalTab('grp')">Grupo</button>
+      <button class="seg-btn ${modalTab === 'rec' ? 'active' : ''}" onclick="switchModalTab('rec')">Registros</button>
     </div>
+
+    <div class="modal-tab-panel">${tabHtml}</div>
   `;
-  document.getElementById('session-modal-overlay').classList.remove('hidden');
 }
 
 function closeSessionModal() {
@@ -1197,55 +1490,148 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSessi
 
 async function saveModalCode() {
   if (!currentModalRow) return;
-  const statusEl = document.getElementById('modal-status');
-  if (typeof pywebview === 'undefined' || !pywebview.api) return;
+  const statusEl = document.getElementById('modal-code-status');
   const code = document.getElementById('modal-code').value.trim();
   const applyLabelEl = document.getElementById('modal-apply-label');
   const applyToLabel = applyLabelEl ? applyLabelEl.checked : false;
-  await pywebview.api.assign_jira_code(currentModalRow.items.map(i => i.id), code, applyToLabel, currentModalRow.key);
-  closeSessionModal();
-  loadData();
+  const sessionIds = currentModalRow.items.map(i => i.id);
+  try {
+    await callApi(
+      () => pywebview.api.assign_jira_code(sessionIds, code, applyToLabel, currentModalRow.key),
+      '/api/assign_jira_code',
+      { session_ids: sessionIds, code, apply_to_label: applyToLabel, label_key: currentModalRow.key }
+    );
+    // Feedback visível antes de fechar — fechar direto sem nenhum sinal fazia
+    // parecer que o clique não tinha feito nada.
+    if (statusEl) statusEl.textContent = 'Salvo!';
+    await new Promise(r => setTimeout(r, 700));
+    closeSessionModal();
+    loadData();
+  } catch (err) {
+    if (statusEl) statusEl.textContent = 'Erro: ' + err.message;
+  }
 }
 
 async function saveModalGroup() {
   if (!currentModalRow) return;
-  if (typeof pywebview === 'undefined' || !pywebview.api) return;
+  const statusEl = document.getElementById('modal-group-status');
   const name = document.getElementById('modal-group-name').value.trim();
-  const defaultLabel = currentModalRow.detail || currentModalRow.process || '';
-  // Se voltou a ser igual ao rótulo automático, remove o override em vez de
-  // salvar um "personalizado" que é idêntico ao padrão.
-  await pywebview.api.set_group_override(currentModalRow.key, name === defaultLabel ? '' : name);
-  closeSessionModal();
-  loadData();
+  if (!name) return;
+  try {
+    await callApi(
+      () => pywebview.api.set_group_override(currentModalRow.key, name),
+      '/api/set_group_override',
+      { label_key: currentModalRow.key, group_name: name }
+    );
+    if (statusEl) statusEl.textContent = 'Salvo!';
+    await new Promise(r => setTimeout(r, 700));
+    closeSessionModal();
+    loadData();
+  } catch (err) {
+    if (statusEl) statusEl.textContent = 'Erro: ' + err.message;
+  }
+}
+
+// Clicar num grupo da lista entra nele; clicar de novo no que já está ativo
+// sai dele — mesmo padrão de um grupo de rádio com deseleção.
+async function assignModalGroup(name) {
+  if (!currentModalRow) return;
+  const isSame = name === currentModalRow.groupLabel;
+  const groupName = isSame ? '' : name;
+  try {
+    await callApi(
+      () => pywebview.api.set_group_override(currentModalRow.key, groupName),
+      '/api/set_group_override',
+      { label_key: currentModalRow.key, group_name: groupName }
+    );
+    closeSessionModal();
+    loadData();
+  } catch (err) {
+    modalErrorText = 'Erro ao salvar grupo: ' + err.message;
+    renderModalBody();
+  }
+}
+
+// Remove SÓ essa atividade do grupo (volta a mostrar com o rótulo próprio
+// dela) — as outras atividades do grupo continuam juntas normalmente.
+async function ungroupModalSelf() {
+  if (!currentModalRow) return;
+  try {
+    await callApi(
+      () => pywebview.api.set_group_override(currentModalRow.key, ''),
+      '/api/set_group_override',
+      { label_key: currentModalRow.key, group_name: '' }
+    );
+    closeSessionModal();
+    loadData();
+  } catch (err) {
+    modalErrorText = 'Erro ao desagrupar: ' + err.message;
+    renderModalBody();
+  }
+}
+
+// Mesma coisa, mas pra outra atividade do grupo (vista na lista de membros),
+// não a que está aberta na modal — não fecha a modal, só atualiza a lista.
+async function ungroupModalMember(key) {
+  try {
+    await callApi(
+      () => pywebview.api.set_group_override(key, ''),
+      '/api/set_group_override',
+      { label_key: key, group_name: '' }
+    );
+    await refreshModalGroupNames();
+  } catch (err) {
+    modalErrorText = 'Erro ao remover do grupo: ' + err.message;
+    renderModalBody();
+  }
 }
 
 async function deleteModalSessions() {
   if (!currentModalRow) return;
-  const label = currentModalRow.groupLabel || currentModalRow.detail || currentModalRow.process;
-  if (!confirm(`Excluir "${label}" (${currentModalRow.items.length} ocorrência(s))? Essa ação não pode ser desfeita.`)) return;
-  if (typeof pywebview === 'undefined' || !pywebview.api) return;
-  const stopTrackingEl = document.getElementById('modal-stop-tracking');
-  const stopTracking = stopTrackingEl ? stopTrackingEl.checked : false;
-  await pywebview.api.delete_sessions(currentModalRow.items.map(i => i.id));
-  if (stopTracking && currentModalRow.process) {
-    await pywebview.api.add_ignored_process(currentModalRow.process);
+  const btn = document.getElementById('modal-delete-confirm-btn');
+  const sessionIds = currentModalRow.items.map(i => i.id);
+  if (btn) { btn.disabled = true; btn.textContent = 'Excluindo...'; }
+  try {
+    await callApi(
+      () => pywebview.api.delete_sessions(sessionIds),
+      '/api/delete_sessions',
+      { session_ids: sessionIds }
+    );
+    if (btn) btn.textContent = 'Excluído!';
+    await new Promise(r => setTimeout(r, 500));
+    closeSessionModal();
+    loadData();
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Excluir'; }
+    modalErrorText = 'Erro ao excluir: ' + err.message;
+    renderModalBody();
   }
-  closeSessionModal();
-  loadData();
 }
 
 async function sendModalWorklog() {
   if (!currentModalRow) return;
   const statusEl = document.getElementById('modal-status');
   const code = document.getElementById('modal-send-code').value.trim();
-  const minutes = parseFloat(document.getElementById('modal-send-minutes').value.replace(',', '.'));
+  const raw = parseFloat(document.getElementById('modal-send-minutes').value.replace(',', '.'));
+  const unit = document.getElementById('modal-send-unit').value;
+  const minutes = unit === 'h' ? raw * 60 : raw;
   if (!code || !minutes || minutes <= 0) { statusEl.textContent = 'Preencha o código da issue e uma duração válida.'; return; }
-  if (typeof pywebview === 'undefined' || !pywebview.api) return;
+  // Apontar de verdade integra com Jira/Tempo reais (precisa de credenciais
+  // configuradas no app) — não tem um equivalente "de mentira" que faça
+  // sentido testar fora do app instalado.
+  if (typeof pywebview === 'undefined' || !pywebview.api) {
+    statusEl.textContent = 'Apontar de verdade só funciona no app instalado (integra com Jira/Tempo reais).';
+    return;
+  }
   statusEl.textContent = 'Enviando...';
   const seconds = Math.round(minutes * 60);
-  const r = await pywebview.api.send_worklog(currentModalRow.items.map(i => i.id), code, selectedDate, seconds, '');
-  statusEl.textContent = r.ok ? 'Apontamento enviado ao Tempo!' : ('Erro: ' + r.error);
-  if (r.ok) loadData();
+  try {
+    const r = await pywebview.api.send_worklog(currentModalRow.items.map(i => i.id), code, selectedDate, seconds, '');
+    statusEl.textContent = r.ok ? 'Apontamento enviado ao Tempo!' : ('Erro: ' + r.error);
+    if (r.ok) loadData();
+  } catch (err) {
+    statusEl.textContent = 'Erro: ' + err.message;
+  }
 }
 
 async function exportSessionsData() {
@@ -1269,7 +1655,7 @@ function renderTopPanel(title, details, cats, color1, color2) {
   items = items.slice(0, 8);
   const maxSecs = items[0]?.secs || 1;
 
-  let html = `<div class="panel"><div class="panel-title">${title}</div>`;
+  let html = `<div><div class="two-col-title">${title}</div>`;
   if (items.length === 0) {
     html += '<div style="color:var(--text-muted);font-size:12.5px;padding:6px 0">Nenhum registro</div>';
   }
@@ -1310,7 +1696,10 @@ function initWeekCalendar() {
     // enorme, invadindo as horas seguintes). Dobrar a altura total mantém a
     // proporção tempo→pixel correta em todo o calendário, então cada evento
     // cresce exatamente na medida certa pro tempo real que ele representa.
-    height: 1240,
+    // 24h * 65px — cada slot de 1h precisa caber pelo menos 2x a altura
+    // mínima de um evento (32px), senão um evento no mínimo já estoura o
+    // próprio slot visualmente.
+    height: 1560,
     nowIndicator: true,
     allDaySlot: false,
     slotEventOverlap: false,
@@ -1323,6 +1712,26 @@ function initWeekCalendar() {
     eventClick: (info) => {
       const g = info.event.extendedProps.session;
       if (g) renderSessionModal(g);
+    },
+    // Altura mínima pequena (16px, bem menor que a base de uma hora agora),
+    // só pra eventos de segundos não colapsarem pra 1-2px — não tem risco
+    // de "inflar" um evento curto pra parecer horas de duração, como o hack
+    // de 128px antes causava.
+    eventDidMount: (info) => {
+      const harness = info.el.closest('.fc-timegrid-event-harness');
+      if (!harness) return;
+      const h = parseFloat(harness.style.height) || 0;
+      if (h < 32) harness.style.height = '32px';
+      // Ignora o left/right que o próprio FullCalendar calculou (tem casos
+      // reais em que ele erra a divisão com vários eventos concorrentes) —
+      // cada rótulo já tem sua coluna fixa decidida em updateWeekCalendar,
+      // aplica direto. Não usa width: com left E right já setados, width é
+      // ignorado pelo CSS (sistema sobre-restrito resolve por left/right).
+      const { col, totalCols } = info.event.extendedProps;
+      if (typeof col === 'number' && totalCols) {
+        harness.style.left = (col * 100 / totalCols) + '%';
+        harness.style.right = ((totalCols - col - 1) * 100 / totalCols) + '%';
+      }
     },
   });
   weekCalendar.render();
@@ -1414,14 +1823,48 @@ function applyCalFilter() {
 
 function updateWeekCalendar() {
   if (!weekCalendar) return;
+  // Os dados recarregam sozinhos a cada 15s — o FullCalendar recria os
+  // elementos de evento nesse processo, então o estado de hover rastreado
+  // (referências antigas) precisa ser zerado junto.
+  _hoveredHour = null;
   const events = [];
   const day = allData[selectedDate];
   if (day && day.sessions) {
-    for (const g of groupSessionsByLabel(day.sessions)) {
+    // Cada rótulo distinto tem sua PRÓPRIA coluna reservada pro dia inteiro
+    // (00:00–23:59) — não é reaproveitada por outro rótulo em nenhum
+    // momento, nem quando ela está "livre" no meio do dia. É a coluna
+    // invisível: o mesmo rótulo pode voltar a aparecer nela mais tarde, mas
+    // um rótulo DIFERENTE nunca entra ali.
+    const visibleGroups = groupSessionsByLabel(day.sessions).filter(g => {
       const label = (g.groupLabel || g.detail || g.process || '').toLowerCase();
-      if (calFilterTerm && !label.includes(calFilterTerm)) continue;
-      events.push({ start: g.start, end: g.end, extendedProps: { session: g } });
-    }
+      return !calFilterTerm || label.includes(calFilterTerm);
+    });
+    visibleGroups.sort((a, b) => a.start.localeCompare(b.start));
+    const totalCols = visibleGroups.length || 1;
+
+    visibleGroups.forEach((g, col) => {
+      // g.start/g.end cobrem a primeira até a última ocorrência do rótulo NO
+      // DIA INTEIRO — usar isso direto faria um bloco só "engolir" o dia
+      // todo. Cada aglomerado de ocorrências próximas (mesmo critério de
+      // continuidade do motor de captura) vira seu próprio bloco, na
+      // posição real em que aconteceu, mas sempre na MESMA coluna do rótulo.
+      for (const c of clusterOccurrences(g.items, 15)) {
+        events.push({
+          start: c.start, end: c.end,
+          extendedProps: {
+            session: {
+              ...g,
+              start: c.start, end: c.end,
+              total_seconds: c.total_seconds,
+              foreground_seconds: c.foreground_seconds,
+              foreground_ranges: c.items.flatMap(i => i.foreground_ranges || []),
+              items: c.items,
+            },
+            col, totalCols,
+          },
+        });
+      }
+    });
   }
   weekCalendar.removeAllEventSources();
   weekCalendar.addEventSource(events);
@@ -1453,14 +1896,11 @@ function highlightCurrentHourRows() {
 // direto no <body>, position:fixed, então escapa de qualquer
 // overflow:hidden dos containers de scroll internos do FullCalendar.
 //
-// Duas coisas independentes, não uma:
-// 1) Crescer a LINHA da hora sob o cursor (fundo da tabela) — funciona em
-//    cima de evento OU de área vazia, porque a detecção é por POSIÇÃO do
-//    cursor contra o retângulo de cada linha, não por estar dentro de um
-//    evento. Não redimensiona o bloco do evento em si — só destaca a faixa
-//    de fundo daquela hora específica.
-// 2) Cartão flutuante com o texto completo quando o cursor está sobre um
-//    evento especificamente — independente do hover de linha.
+// Só destaca a cor de fundo da hora sob o cursor (funciona em cima de
+// evento OU de área vazia — detecção por posição do cursor contra o
+// retângulo de cada linha, não por estar dentro de um elemento de evento).
+// Não tenta redimensionar nada — nem a célula real do FullCalendar (provou
+// ser instável com expandRows:true) nem o bloco do evento.
 let _hoveredHour = null;
 let _hourRowRects = null;
 
@@ -1477,54 +1917,6 @@ function _refreshHourRowRects(el) {
   _hourRowRects = rects;
 }
 
-// Além de destacar a linha de fundo, mostra uma cópia AMPLIADA (clone,
-// position:fixed) de qualquer evento que passe pela hora sob o cursor —
-// isso é o "evento cresce" de verdade, sem tocar no bloco real (que
-// continua no tamanho/posição corretos, proporcionais ao tempo real —
-// crescer o bloco de verdade foi o que causou o bug de um evento de 30min
-// virar 5h de altura). O clone nunca sai da largura/posição horizontal do
-// evento original, só fica mais alto, centralizado na interseção com a
-// hora do cursor.
-let _hourLensEls = [];
-function _clearHourLens() {
-  _hourLensEls.forEach(n => n.remove());
-  _hourLensEls = [];
-}
-function _showHourLens(el, hourKey) {
-  _clearHourLens();
-  if (!hourKey) return;
-  const hourNum = parseInt(hourKey.slice(0, 2), 10);
-  const rowRect = _hourRowRects.find(r => r.t === hourKey);
-  if (!rowRect) return;
-  const lensHeight = 110;
-  el.querySelectorAll('.fc-sess-event').forEach((evEl) => {
-    const s = evEl._chcSession;
-    if (!s) return;
-    const startH = parseInt(s.start.slice(11, 13), 10);
-    const endMin = s.end.slice(14, 16);
-    let endH = parseInt(s.end.slice(11, 13), 10);
-    if (endMin === '00' && endH > startH) endH -= 1; // termina EXATAMENTE no início da hora seguinte: não ocupa nada dela
-    if (hourNum < startH || hourNum > endH) return;
-
-    const harness = evEl.closest('.fc-timegrid-event-harness');
-    if (!harness) return;
-    const harnessRect = harness.getBoundingClientRect();
-    const top = Math.max(rowRect.top, harnessRect.top);
-    const bottom = Math.min(rowRect.bottom, harnessRect.bottom);
-    const centerY = (top + bottom) / 2;
-
-    const clone = evEl.cloneNode(true);
-    clone.classList.add('cal-hour-lens');
-    clone.style.position = 'fixed';
-    clone.style.left = harnessRect.left + 'px';
-    clone.style.width = harnessRect.width + 'px';
-    clone.style.top = (centerY - lensHeight / 2) + 'px';
-    clone.style.height = lensHeight + 'px';
-    document.body.appendChild(clone);
-    _hourLensEls.push(clone);
-  });
-}
-
 function initHourRowHover(el) {
   el.addEventListener('mousemove', (e) => {
     _refreshHourRowRects(el);
@@ -1538,14 +1930,12 @@ function initHourRowHover(el) {
     if (t !== null) {
       el.querySelectorAll(`[data-time="${t}"]`).forEach(n => n.classList.add('cal-hour-hover'));
     }
-    _showHourLens(el, t);
   });
   el.addEventListener('mouseleave', () => {
     if (_hoveredHour !== null) {
       el.querySelectorAll(`[data-time="${_hoveredHour}"]`).forEach(n => n.classList.remove('cal-hour-hover'));
     }
     _hoveredHour = null;
-    _clearHourLens();
   });
 }
 
@@ -1770,8 +2160,72 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(csv_data.encode("utf-8-sig"))
 
+        elif path == "/api/group_overrides":
+            self._send_json(200, load_group_overrides())
+
+        elif path == "/api/ignored_processes":
+            import tracker
+            self._send_json(200, sorted(tracker.get_ignored_processes()))
+
         else:
             self._send(404, "text/plain", b"Not found")
+
+    # Ações que mudam estado (excluir, agrupar, código, rastrear/parar) só
+    # tinham caminho via API do pywebview — no navegador comum (sem a ponte
+    # nativa), os botões da modal ficavam sem efeito nenhum, silenciosamente,
+    # porque é assim que o guard "typeof pywebview === 'undefined'" foi
+    # desenhado pra se comportar. Esses endpoints dão um caminho HTTP
+    # equivalente, mesmo padrão do /export/* já existente, pra essas ações
+    # funcionarem de verdade também fora do app empacotado.
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        raw = self.rfile.read(length) if length else b""
+        try:
+            payload = json.loads(raw.decode("utf-8")) if raw else {}
+        except Exception:
+            self._send_json(400, {"ok": False, "error": "JSON inválido"})
+            return
+
+        try:
+            if path == "/api/delete_sessions":
+                delete_sessions(payload.get("session_ids") or [])
+                self._send_json(200, {"ok": True})
+
+            elif path == "/api/set_group_override":
+                set_group_override(payload.get("label_key") or "", (payload.get("group_name") or "").strip())
+                self._send_json(200, {"ok": True})
+
+            elif path == "/api/assign_jira_code":
+                session_ids = payload.get("session_ids") or []
+                code = payload.get("code") or ""
+                if payload.get("apply_to_label") and payload.get("label_key"):
+                    set_jira_label_code(payload["label_key"], code)
+                else:
+                    assign_jira_code(session_ids, code)
+                self._send_json(200, {"ok": True})
+
+            elif path == "/api/set_ignored_process":
+                import tracker
+                name = (payload.get("name") or "").strip()
+                if name:
+                    current = tracker.get_ignored_processes()
+                    if payload.get("ignored"):
+                        current.add(name.lower())
+                    else:
+                        current.discard(name.lower())
+                    tracker.set_ignored_processes(sorted(current))
+                self._send_json(200, {"ok": True})
+
+            else:
+                self._send(404, "text/plain", b"Not found")
+        except Exception as e:
+            self._send_json(500, {"ok": False, "error": str(e)})
+
+    def _send_json(self, code, data):
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self._send(code, "application/json; charset=utf-8", body)
 
     def _send(self, code, ctype, body):
         self.send_response(code)

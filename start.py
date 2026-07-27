@@ -361,6 +361,16 @@ class AppApi:
         tracker.set_ignored_processes(sorted(current))
         return True
 
+    def remove_ignored_process(self, name):
+        import tracker
+        name = (name or "").strip().lower()
+        if not name:
+            return sorted(tracker.get_ignored_processes())
+        current = tracker.get_ignored_processes()
+        current.discard(name)
+        tracker.set_ignored_processes(sorted(current))
+        return True
+
     def uninstall(self, delete_data=False):
         """
         Remove autostart, encerra o daemon em segundo plano e apaga o app
