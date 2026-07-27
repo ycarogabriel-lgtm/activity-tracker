@@ -26,6 +26,13 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.parse
 
 def _data_dir() -> Path:
+    # Override pra dev/teste — nunca ler/escrever os dados reais do usuário
+    # sem querer enquanto o app de verdade também pode estar rodando.
+    override = os.environ.get("ACTIVITY_TRACKER_DATA_DIR")
+    if override:
+        d = Path(override)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
     if sys.platform == "darwin":
         d = Path.home() / "Library" / "Application Support" / "ActivityTracker"
     elif sys.platform == "win32":
@@ -69,6 +76,7 @@ ACTIVE_SESSIONS_FILE = SCRIPT_DIR / "active_sessions.json"
 JIRA_CODES_FILE = SCRIPT_DIR / "jira_codes.json"
 JIRA_LABEL_CODES_FILE = SCRIPT_DIR / "jira_label_codes.json"
 DELETED_SESSIONS_FILE = SCRIPT_DIR / "deleted_sessions.json"
+GROUP_OVERRIDES_FILE = SCRIPT_DIR / "group_overrides.json"
 _migrate_if_needed(LOG_FILE)
 PORT = int(os.environ.get("PORT", 5000))
 
@@ -251,6 +259,29 @@ def session_label_key(s: dict) -> str:
     return f'{s.get("process","")}::{s.get("category","")}::{s.get("detail","")}'
 
 
+def load_group_overrides() -> dict:
+    """Agrupamento é decisão do usuário, não regra escondida: por padrão as
+    sessões viram um bloco só no calendário quando process+category+detail
+    batem exatamente — aqui o usuário pode dar um nome de grupo próprio pra
+    um rótulo específico, que passa a valer também pra ocorrências futuras."""
+    if GROUP_OVERRIDES_FILE.exists():
+        try:
+            with open(GROUP_OVERRIDES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def set_group_override(label_key: str, group_name: str):
+    overrides = load_group_overrides()
+    if group_name:
+        overrides[label_key] = group_name
+    else:
+        overrides.pop(label_key, None)
+    _atomic_write_json(GROUP_OVERRIDES_FILE, overrides, ensure_ascii=False, indent=2)
+
+
 def assign_jira_code(session_ids: list, code: str):
     """Atribui (ou remove, se code vazio) um código Jira/Tempo a uma lista de
     sessões pelo id. Guardado à parte do JSONL de sessões (que é append-only),
@@ -281,6 +312,7 @@ def get_sessions_by_date(date_filter=None) -> dict:
     sessions = load_sessions()
     codes = load_jira_codes()
     label_codes = load_jira_label_codes()
+    group_overrides = load_group_overrides()
     for s in sessions:
         c = codes.get(s.get("id"))
         if c:
@@ -288,6 +320,7 @@ def get_sessions_by_date(date_filter=None) -> dict:
         else:
             lc = label_codes.get(session_label_key(s))
             s["jira_code"] = lc["code"] if lc else None
+        s["group_label"] = group_overrides.get(session_label_key(s))
     if date_filter:
         sessions = [s for s in sessions if s.get("date") == date_filter]
     grouped = defaultdict(list)
@@ -333,253 +366,515 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Activity Tracker</title>
 <style>
+  /* Não dá pra usar SF Symbols de verdade aqui — é fonte proprietária da
+     Apple, sem API de CSS pra carregar num WebView. Ícones em SVG inline,
+     linguagem visual aproximada (traço fino, pontas arredondadas). */
+  .icon { width: 1em; height: 1em; vertical-align: -0.15em; flex-shrink: 0; stroke-width: 1.6; }
+
+  /* Escuro é o padrão; :root[data-theme="light"] troca só os tokens.
+     --accent é cinza-azulado quase neutro, calibrado pra Lc >= 60 via APCA
+     (mínimo real de leitura) mesmo continuando bem dessaturado. */
   :root {
-    --bg: #0f172a;
-    --surface: #1e293b;
-    --surface2: #273449;
-    --border: #334155;
-    --text: #e2e8f0;
-    --text2: #94a3b8;
-    --accent: #3b82f6;
-    --meeting: #8b5cf6;
-    --chat: #06b6d4;
-    --browser: #10b981;
-    --app: #f59e0b;
-    --idle: #475569;
-    --teams: #7c3aed;
+    --ground: #121214;
+    --surface: #1a1a1d;
+    --surface-2: #232326;
+    --surface-3: #2c2c30;
+    --border: #38383c;
+    --border-soft: #29292c;
+    --text: #f5f5f0;
+    --text-dim: #c2c2be;
+    --text-muted: #b5b5b1;
+    --accent: #aab8bd;
+    --accent-strong: #8898a0;
+    --accent-ink: #121214;
+    --surface-glass: rgba(26, 26, 29, 0.72);
+    --btn-glass: rgba(40, 40, 44, 0.38);
+    --cat-meeting: #4d8dff;
+    --cat-chat: #22d3ee;
+    --cat-teams-app: #a78bfa;
+    --cat-app: #e0a458;
+    --cat-idle: #6b6b70;
+    --danger: #f58080;
+    --danger-border: #e05252;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", monospace;
+    --sans: -apple-system, "Segoe UI", system-ui, sans-serif;
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+  :root[data-theme="light"] {
+    --ground: #f4f4f2;
+    --surface: #ffffff;
+    --surface-2: #ececea;
+    --surface-3: #e2e2df;
+    --border: #cfcfca;
+    --border-soft: #dededa;
+    --text: #1c1c1a;
+    --text-dim: #4a4a46;
+    --text-muted: #67675f;
+    --accent: #4d5760;
+    --accent-strong: #3d454c;
+    --accent-ink: #ffffff;
+    --surface-glass: rgba(255, 255, 255, 0.72);
+    --btn-glass: rgba(255, 255, 255, 0.42);
+    --cat-meeting: #2b62c9;
+    --cat-chat: #0d8fa6;
+    --cat-teams-app: #7c5cd6;
+    --cat-app: #a9701f;
+    --cat-idle: #85857c;
+    --danger: #c23a3a;
+    --danger-border: #c23a3a;
+  }
 
-  /* Header */
-  header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: center; gap: 12px; position: sticky; top: 0; z-index: 100; flex-wrap: wrap; }
-  header h1 { font-size: 1.1rem; font-weight: 700; }
-  header .subtitle { color: var(--text2); font-size: 0.8rem; }
-  .badge-live { background: #ef4444; color: white; font-size: 0.68rem; padding: 2px 8px; border-radius: 999px; font-weight: 700; animation: pulse 2s infinite; }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
-  .header-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
-  .btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 0.82rem; text-decoration: none; display: inline-block; transition: all .15s; }
-  .btn:hover { background: var(--accent); border-color: var(--accent); color: white; }
-  .btn-green:hover { background: #10b981; border-color: #10b981; }
-  .btn-danger { background: transparent; border: 1px solid #ef4444; color: #ef4444; width: 100%; padding: 10px; text-align: center; font-size: 0.8rem; }
-  .btn-danger:hover { background: #ef4444; border-color: #ef4444; color: #fff; }
-  .settings-danger { margin-top: auto; padding-top: 16px; border-top: 1px solid var(--border); }
-  .btn-icon { background: var(--surface2); border: 1px solid var(--border); color: var(--text2); width: 32px; height: 32px; border-radius: 8px; cursor: pointer; font-size: 1rem; display: flex; align-items: center; justify-content: center; transition: all .15s; }
-  .btn-icon:hover { color: var(--text); border-color: var(--text2); }
+  * { box-sizing: border-box; }
+  html { background: var(--ground); }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.45;
+    position: relative;
+  }
+  /* Sem isso, o backdrop-filter do vidro não tem nada variado atrás pra
+     borrar — vira só uma cor chapada semi-transparente. Manchas suaves e
+     bem apagadas dão profundidade real pra vibrância pegar. */
+  body::before {
+    content: '';
+    position: fixed; inset: 0; z-index: 0;
+    background:
+      radial-gradient(680px 480px at 8% -6%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 60%),
+      radial-gradient(620px 440px at 96% 12%, color-mix(in srgb, var(--cat-meeting) 12%, transparent), transparent 55%),
+      radial-gradient(720px 520px at 30% 108%, color-mix(in srgb, var(--cat-chat) 10%, transparent), transparent 55%);
+    pointer-events: none;
+  }
+  * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 
-  /* Settings panel */
-  .settings-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 500; display: flex; justify-content: flex-end; animation: fadeIn .15s; }
-  .settings-overlay.hidden { display: none; }
-  @keyframes fadeIn { from{opacity:0} to{opacity:1} }
-  .settings-panel { background: var(--bg); width: 340px; height: 100%; overflow-y: auto; display: flex; flex-direction: column; border-left: 1px solid var(--border); }
-  .settings-head { display: flex; align-items: center; justify-content: space-between; padding: 20px 24px; border-bottom: 1px solid var(--border); }
-  .settings-head h2 { font-size: 1rem; font-weight: 700; margin: 0; }
-  .settings-close { background: none; border: none; color: var(--text2); cursor: pointer; font-size: 1.2rem; padding: 4px 6px; border-radius: 6px; }
-  .settings-close:hover { background: var(--surface2); color: var(--text); }
-  .settings-body { flex: 1; padding: 20px 24px; display: flex; flex-direction: column; gap: 12px; }
-  .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 16px; background: var(--surface); border-radius: 10px; border: 1px solid var(--border); }
-  .settings-lbl strong { display: block; font-size: 0.87rem; margin-bottom: 4px; color: var(--text); }
-  .settings-lbl span { font-size: 0.75rem; color: var(--text2); line-height: 1.4; }
-  .settings-info { padding: 14px 16px; background: var(--surface); border-radius: 10px; border: 1px solid var(--border); }
-  .settings-info strong { display: block; font-size: 0.78rem; color: var(--text2); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .05em; }
-  .settings-info span { font-size: 0.76rem; color: var(--text); word-break: break-all; font-family: monospace; }
-  .tog { flex-shrink: 0; width: 42px; height: 24px; background: var(--border); border-radius: 12px; position: relative; cursor: pointer; transition: background .2s; }
-  .tog.on { background: var(--accent); }
-  .tog-knob { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; background: #fff; border-radius: 50%; transition: transform .2s; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
-  .tog.on .tog-knob { transform: translateX(18px); }
+  /* !important de propósito: .hidden precisa vencer qualquer display:flex/grid
+     de regras mais específicas ou definidas depois no arquivo — senão a
+     ordem no CSS decide silenciosamente quem apareceria, não a classe. */
+  .hidden { display: none !important; }
 
-  /* Layout */
-  .container { max-width: 1280px; margin: 0 auto; padding: 20px 24px; }
+  /* ── Casca de app desktop ─────────────────────────────────────────────────
+     Sidebar fixa (não navbar de site), toolbar estreita com vidro/vibrância.
+     Cantos de janela e traffic lights vêm do chrome nativo do SO de verdade
+     (pywebview já desenha isso) — não replicados aqui dentro. */
+  .app-shell { display: flex; min-height: 100vh; position: relative; z-index: 1; }
+  .sidebar {
+    width: 208px; flex-shrink: 0;
+    background: var(--surface-glass);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    backdrop-filter: blur(24px) saturate(180%);
+    border-right: 1px solid var(--border-soft);
+    box-shadow: inset -1px 0 0 rgba(255,255,255,.04), 2px 0 24px rgba(0,0,0,.16);
+    display: flex; flex-direction: column; padding: 18px 12px;
+    position: relative; z-index: 2;
+  }
+  .sidebar-logo { padding: 4px 8px 22px; display: block; max-width: 100%; overflow: hidden; }
+  .sidebar-logo svg { display: block; height: 16px; width: auto; max-width: 100%; color: var(--text); }
+  .side-nav { display: flex; flex-direction: column; gap: 2px; }
+  .side-item {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    padding: 7px 10px; border-radius: 8px; background: none; border: none;
+    color: var(--text-dim); font-size: 13.5px; font-weight: 600; font-family: var(--sans);
+    text-align: left; cursor: pointer;
+  }
+  .side-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+  .side-item:hover { background: var(--surface-2); color: var(--text); }
+  .side-item.active { background: var(--surface-3); color: var(--accent); }
+  .side-item.active svg { color: var(--accent); }
+  .tab-badge { font-family: var(--mono); font-size: 11px; background: var(--surface-3); color: var(--text-muted); padding: 1px 7px; border-radius: 999px; margin-left: auto; }
+  .side-item.active .tab-badge { background: var(--ground); color: var(--accent); }
 
-  /* Navegação por semana */
-  .date-nav { display: flex; gap: 6px; margin-bottom: 20px; align-items: stretch; }
-  .week-nav-btn { background: var(--surface); border: 1px solid var(--border); color: var(--text2); padding: 0 14px; border-radius: 8px; cursor: pointer; font-size: 1.2rem; line-height: 1; transition: all .15s; flex-shrink: 0; }
-  .week-nav-btn:hover { background: var(--accent); border-color: var(--accent); color: white; }
-  .week-days { display: flex; gap: 4px; flex: 1; }
-  .date-btn { background: var(--surface); border: 1px solid var(--border); color: var(--text2); padding: 7px 4px; border-radius: 8px; cursor: pointer; font-size: 0.68rem; text-align: center; transition: all .15s; flex: 1; text-transform: uppercase; letter-spacing: .04em; line-height: 1.3; }
-  .date-btn:hover { background: var(--surface2); color: var(--text); }
-  .date-btn.active { background: var(--accent); border-color: var(--accent); color: white; }
-  .date-btn.today:not(.active) { border-color: var(--accent); color: var(--accent); }
-  .date-btn.no-data { opacity: 0.3; pointer-events: none; }
-  .date-day { font-size: 0.78rem; font-weight: 700; display: block; margin-top: 2px; }
-  .week-range { font-size: 0.7rem; color: var(--text2); text-align: center; margin-top: -14px; margin-bottom: 14px; letter-spacing: .03em; }
-  .week-nav-btn:disabled { opacity: 0.25; cursor: not-allowed; pointer-events: none; }
+  .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  /* Só agrupamento em linha — sem caixa, sem vidro, sem borda própria aqui.
+     Os botões é que flutuam soltos (vidro + sombra ficam neles, não numa
+     barra por trás agrupando tudo). */
+  /* sticky de propósito: os botões ficam por cima enquanto a página rola —
+     é isso que faz o vidro deles ter algo colorido passando por baixo pra
+     borrar de verdade, não só uma cor chapada parada. */
+  .toolbar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 13px 24px; flex-shrink: 0;
+    position: sticky; top: 0; z-index: 3;
+  }
+  .toolbar-actions { margin-left: auto; display: flex; gap: 8px; }
+
+  /* Cápsula no estilo da toolbar do Mail/macOS: flutua sozinho, com vidro +
+     sombra nele mesmo já em repouso (não só no hover). --btn-glass é bem
+     mais transparente que --surface-glass (sidebar/modal) de propósito —
+     esses têm texto denso e precisam ficar legíveis; o botão precisa
+     deixar a cor de trás aparecer de verdade pra parecer vidro. */
+  .btn {
+    background: var(--btn-glass);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+    backdrop-filter: blur(16px) saturate(180%);
+    border: 1px solid var(--border-soft); color: var(--text-dim);
+    box-shadow: 0 1px 3px rgba(0,0,0,.18), 0 1px 1px rgba(0,0,0,.1);
+    padding: 7px 14px; border-radius: 999px; font-size: 13px; font-weight: 500; cursor: pointer;
+    min-height: 32px; display: inline-flex; align-items: center; gap: 6px; font-family: var(--sans);
+    transition: background .1s, transform .1s, color .1s, border-color .1s;
+  }
+  .btn:hover { background: var(--surface-3); color: var(--text); }
+  .btn:active { background: var(--surface-2); transform: scale(.96); }
+  .btn-primary { background: var(--accent); color: var(--accent-ink); font-weight: 700; border-color: var(--accent); }
+  .btn-primary:hover { background: var(--accent-strong); color: var(--accent-ink); }
+  .btn-primary:active { background: var(--accent-strong); transform: scale(.96); }
+  .btn-danger-o { color: var(--danger); }
+  .btn-danger-o:hover { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+  .btn-icon {
+    width: 32px; height: 32px; padding: 0; justify-content: center;
+    background: transparent; border: 1px solid transparent; border-radius: 50%; color: var(--text-dim); cursor: pointer;
+    transition: background .1s, transform .1s, color .1s;
+  }
+  .btn-icon:hover { background: var(--surface-3); color: var(--text); }
+  .btn-icon:active { background: var(--surface-2); transform: scale(.92); }
+
+  main { padding: 20px 24px 48px; max-width: 1180px; }
+
+  .status-banner {
+    display: flex; align-items: center; gap: 12px;
+    background: #2e2210; border: 1px solid var(--accent-strong); color: var(--text);
+    margin: 16px 24px 0; padding: 12px 16px; border-radius: 10px; font-size: 13.5px;
+  }
+  .status-banner svg { color: var(--accent); flex-shrink: 0; width: 20px; height: 20px; }
+  .status-text { flex: 1; }
+  .status-text strong { font-weight: 700; }
+  .status-action { flex-shrink: 0; border-color: var(--accent); color: var(--accent); }
+  /* Pausa manual não é erro — banner neutro, nunca amarelo/erro. */
+  .status-banner-manual { background: var(--surface); border-color: var(--border); }
+  .status-banner-manual svg { color: var(--text-muted); }
+
+  .daynav { display: flex; gap: 8px; align-items: stretch; margin: 16px 24px 0; }
+  .day-arrow {
+    background: var(--btn-glass);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+    backdrop-filter: blur(16px) saturate(180%);
+    border: 1px solid var(--border-soft); border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0,0,0,.18), 0 1px 1px rgba(0,0,0,.1);
+    color: var(--text-muted); width: 40px; height: 40px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    transition: background .1s, transform .1s, color .1s, border-color .1s;
+  }
+  .day-arrow:hover { color: var(--text); background: var(--surface-3); }
+  .day-arrow:active { transform: scale(.92); }
+  .day-arrow:disabled { opacity: .25; cursor: not-allowed; }
+  .days { display: flex; gap: 6px; flex: 1; }
+  .date-btn {
+    flex: 1; background: transparent; border: 1px solid var(--border-soft); border-radius: 10px;
+    padding: 8px 4px; text-align: center; cursor: pointer; min-height: 50px; color: var(--text-dim); font-family: var(--sans);
+  }
+  .date-btn:hover { background: var(--surface-2); color: var(--text); }
+  .date-btn .dow { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; display: block; color: var(--text-muted); }
+  .date-btn .date-day { font-family: var(--mono); font-size: 15px; font-weight: 600; margin-top: 2px; display: block; }
+  .date-btn.today:not(.active) { border-color: var(--accent); }
+  .date-btn.today:not(.active) .date-day { color: var(--accent); }
+  .date-btn.active { background: var(--accent); border-color: var(--accent); }
+  .date-btn.active .dow, .date-btn.active .date-day { color: var(--accent-ink); }
+  .date-btn.no-data { opacity: .3; pointer-events: none; }
+  .week-range { font-size: 12.5px; color: var(--text-muted); margin: 8px 24px 0; }
+
+  .section-head { display: flex; align-items: baseline; justify-content: space-between; margin: 20px 0 14px; }
+  .section-title { font-size: 17px; font-weight: 700; }
+  .cal-filter { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border-soft); border-radius: 8px; padding: 9px 14px; margin-bottom: 16px; max-width: 340px; }
+  .cal-filter svg { color: var(--text-muted); flex-shrink: 0; }
+  .cal-filter input { background: none; border: none; outline: none; color: var(--text); font-size: 13.5px; width: 100%; font-family: var(--sans); }
+  .cal-filter input::placeholder { color: var(--text-muted); }
+
+  .panel { background: var(--surface); border: 1px solid var(--border-soft); border-radius: 14px; padding: 16px; }
+  .panel-title { font-size: 12.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 14px; }
 
   /* Summary cards */
   .summary-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 20px; }
-  @media(max-width:900px){ .summary-grid{grid-template-columns:repeat(3,1fr);} }
-  @media(max-width:500px){ .summary-grid{grid-template-columns:repeat(2,1fr);} }
-  .summary-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
-  .summary-card .label { font-size: 0.7rem; color: var(--text2); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
-  .summary-card .value { font-size: 1.5rem; font-weight: 700; line-height: 1; }
-  .summary-card .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
-  .c-meeting { color: var(--meeting); } .dot-meeting { background: var(--meeting); }
-  .c-chat { color: var(--chat); } .dot-chat { background: var(--chat); }
-  .c-browser { color: var(--browser); } .dot-browser { background: var(--browser); }
-  .c-app { color: var(--app); } .dot-app { background: var(--app); }
-  .c-idle { color: var(--idle); } .dot-idle { background: var(--idle); }
-  .c-active { color: var(--accent); } .dot-active { background: var(--accent); }
+  @media(max-width:1000px){ .summary-grid{grid-template-columns:repeat(3,1fr);} }
+  @media(max-width:560px){ .summary-grid{grid-template-columns:repeat(2,1fr);} }
+  .summary-card { background: var(--surface); border: 1px solid var(--border-soft); border-radius: 12px; padding: 14px 16px; }
+  .summary-card .label { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 8px; font-weight: 600; }
+  .summary-card .value { font-family: var(--mono); font-size: 22px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; color: var(--text); }
+  .summary-card .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .dot-meeting { background: var(--cat-meeting); } .dot-chat { background: var(--cat-chat); }
+  .dot-browser { background: var(--accent); } .dot-app { background: var(--cat-app); }
+  .dot-idle { background: var(--cat-idle); } .dot-active { background: var(--accent); }
 
-  /* Two column layout */
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
-  @media(max-width:700px){ .two-col{grid-template-columns:1fr;} }
-
-  /* Top lists */
-  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
-  .panel-title { font-size: 0.82rem; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 14px; }
-  .top-item { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  @media(max-width:760px){ .two-col{grid-template-columns:1fr;} }
+  .top-item { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border-soft); }
   .top-item:last-child { border-bottom: none; }
-  .top-item .name { width: 180px; font-size: 0.82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
-  .top-item .bar-wrap { flex: 1; background: var(--border); border-radius: 4px; height: 5px; overflow: hidden; }
+  .top-item .name { width: 170px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+  .top-item .bar-wrap { flex: 1; background: var(--surface-2); border-radius: 4px; height: 6px; overflow: hidden; }
   .top-item .bar { height: 100%; border-radius: 4px; }
-  .top-item .dur { width: 52px; text-align: right; font-size: 0.8rem; color: var(--text2); font-family: monospace; flex-shrink: 0; }
+  .top-item .dur { font-family: var(--mono); font-size: 12.5px; color: var(--text-dim); width: 54px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
 
-  /* Hourly chart */
   .chart-wrap { margin-bottom: 20px; }
-  .chart-bars { display: flex; align-items: flex-end; gap: 3px; height: 80px; padding: 0 4px; }
-  .chart-bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; }
-  .chart-bar { width: 100%; border-radius: 3px 3px 0 0; background: var(--accent); opacity: 0.8; min-height: 2px; transition: height .3s; }
-  .chart-label { font-size: 0.6rem; color: var(--text2); }
+  .chart-bars { display: flex; gap: 3px; height: 80px; padding: 0 4px; }
+  /* height:100% aqui é o que faz o height:X% do .chart-bar (definido via JS)
+     ter uma referência de verdade pra resolver contra — sem isso a % fica
+     inválida (sem altura de pai definida) e todas as barras colapsam pro
+     min-height, ficando visualmente idênticas/achatadas. */
+  .chart-bar-col { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 4px; }
+  .chart-bar { width: 100%; border-radius: 3px 3px 0 0; background: var(--accent); opacity: .75; min-height: 2px; transition: height .3s; }
+  .chart-label { font-size: 10.5px; color: var(--text-muted); font-family: var(--mono); }
 
-  .settings-field { width: 100%; box-sizing: border-box; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 8px; font-size: 0.78rem; margin-top: 6px; font-family: inherit; }
-  .ignored-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--surface2); border: 1px solid var(--border); border-radius: 999px; padding: 4px 6px 4px 12px; font-size: 0.76rem; color: var(--text); }
-  .ignored-chip button { background: none; border: none; color: var(--text2); cursor: pointer; font-size: 0.85rem; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
-  .ignored-chip button:hover { background: rgba(239,68,68,.2); color: #ef4444; }
+  .empty { text-align: center; padding: 48px; color: var(--text-muted); }
 
-  /* Modal de detalhe da atividade (clique numa sessão) */
-  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 600; display: flex; align-items: center; justify-content: center; padding: 20px; animation: fadeIn .15s; }
-  .modal-overlay.hidden { display: none; }
-  .modal-card { position: relative; background: var(--bg); border: 1px solid var(--border); border-radius: 14px; width: 420px; max-width: 100%; max-height: 86vh; overflow-y: auto; padding: 22px 22px 20px; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
-  .modal-title { font-size: 1rem; font-weight: 700; margin-right: 24px; margin-bottom: 8px; }
-  .modal-sub { font-size: 0.76rem; color: var(--text2); line-height: 1.6; margin-bottom: 16px; }
-  .modal-label { display: block; font-size: 0.72rem; color: var(--text2); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 2px; margin-top: 4px; }
-  .modal-actions { display: flex; gap: 8px; margin-top: 10px; }
-  .modal-actions .btn { flex: 1; }
-
-  .cat-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
-  .badge-teams_meeting { background: rgba(139,92,246,.18); color: var(--meeting); }
-  .badge-teams_chat { background: rgba(6,182,212,.18); color: var(--chat); }
-  .badge-teams_app { background: rgba(124,58,237,.18); color: #a78bfa; }
-  .badge-browser { background: rgba(16,185,129,.18); color: var(--browser); }
-  .badge-app { background: rgba(245,158,11,.18); color: var(--app); }
-  .badge-idle { background: rgba(71,85,105,.18); color: var(--idle); }
-
-  .empty { text-align: center; padding: 48px; color: var(--text2); }
-
-  /* Calendário do dia (FullCalendar vendorizado, tematizado) */
-  #week-calendar { --fc-border-color: var(--border); --fc-page-bg-color: transparent; --fc-neutral-bg-color: var(--surface2); --fc-list-event-hover-bg-color: var(--surface2); --fc-today-bg-color: rgba(59,130,246,.08); --fc-event-bg-color: var(--accent); --fc-event-border-color: transparent; color: var(--text); font-family: inherit; }
-  #week-calendar .fc-col-header-cell-cushion, #week-calendar .fc-timegrid-slot-label-cushion, #week-calendar .fc-timegrid-axis-cushion { color: var(--text2); font-size: 0.7rem; text-decoration: none; }
+  /* Calendário do dia (FullCalendar vendorizado, tematizado com os novos tokens) */
+  #week-calendar { --fc-border-color: var(--border-soft); --fc-page-bg-color: transparent; --fc-neutral-bg-color: var(--surface-2); --fc-list-event-hover-bg-color: var(--surface-2); --fc-today-bg-color: transparent; --fc-event-bg-color: var(--accent); --fc-event-border-color: transparent; color: var(--text); font-family: inherit; }
+  #week-calendar .fc-col-header-cell-cushion, #week-calendar .fc-timegrid-slot-label-cushion, #week-calendar .fc-timegrid-axis-cushion { color: var(--text-muted); font-size: 11px; text-decoration: none; font-family: var(--mono); }
   #week-calendar a { color: var(--text); text-decoration: none; }
-  #week-calendar .fc-scrollgrid, #week-calendar table { border-color: var(--border) !important; }
-  #week-calendar .fc-timegrid-slot, #week-calendar .fc-timegrid-col { border-color: var(--border); }
-  /* Dá mais espaço vertical pra hora anterior/atual/seguinte — é onde tem
-     mais chance de ter várias atividades concorrentes pra examinar. */
+  #week-calendar .fc-scrollgrid, #week-calendar table { border-color: var(--border-soft) !important; }
+  #week-calendar .fc-timegrid-slot, #week-calendar .fc-timegrid-col { border-color: var(--border-soft); }
+  #week-calendar .fc-timegrid-now-indicator-line { border-color: var(--accent); }
+  #week-calendar .fc-timegrid-now-indicator-arrow { border-color: var(--accent); color: var(--accent); }
+  /* Mais espaço vertical pra hora anterior/atual/seguinte — mais chance de
+     ter várias atividades concorrentes pra examinar ali. */
   #week-calendar .fc-timegrid-slot-lane.cal-hour-focus,
-  #week-calendar .fc-timegrid-slot-label.cal-hour-focus { height: 90px !important; background: rgba(59,130,246,.06); }
-  .fc-sess-event { position: relative; height: 100%; width: 100%; border-radius: 4px; overflow: hidden; padding: 1px 4px; font-size: 0.65rem; color: #fff; cursor: pointer; }
-  .fc-sess-bg { position: absolute; inset: 0; opacity: 0.38; }
+  #week-calendar .fc-timegrid-slot-label.cal-hour-focus { height: 90px !important; background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  .fc-sess-event { position: relative; height: 100%; width: 100%; border-radius: 6px; overflow: hidden; padding: 1px; font-size: .65rem; color: #fff; cursor: pointer; }
+  .fc-sess-bg { position: absolute; inset: 0; opacity: .18; }
   .fc-sess-fg { position: absolute; left: 0; right: 0; opacity: 1; }
-  .fc-sess-label { position: relative; z-index: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .fc-sess-content { position: relative; z-index: 1; background: rgba(10,10,12,.82); padding: 4px 7px; display: inline-block; max-width: 100%; border-radius: 0 0 6px 0; }
+  .fc-sess-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 700; display: block; color: #fff; }
+
+  .legend { display: flex; gap: 20px; margin-top: 16px; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); font-weight: 500; }
+  .legend-swatch { width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; }
+
+  /* Configurações — agrupada em blocos nomeados (Miller, 1956) */
+  .cfg-group { background: var(--surface); border: 1px solid var(--border-soft); border-radius: 14px; padding: 18px 20px; margin-bottom: 16px; max-width: 640px; }
+  .cfg-group-head { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; margin-bottom: 12px; }
+  .cfg-group-head svg { color: var(--accent); width: 17px; height: 17px; }
+  .cfg-danger .cfg-group-head svg { color: var(--danger); }
+  .cfg-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 0; border-top: 1px solid var(--border-soft); }
+  .cfg-row:first-of-type { border-top: none; }
+  .cfg-row strong { display: block; font-size: 13.5px; }
+  .cfg-row span { display: block; font-size: 12.5px; color: var(--text-muted); margin-top: 2px; }
+  .mono-path { font-family: var(--mono); font-size: 11.5px !important; word-break: break-all; }
+  .cfg-field { width: 100%; box-sizing: border-box; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 8px 10px; font-size: 13px; margin-top: 8px; font-family: var(--sans); }
+  .toggle { width: 40px; height: 23px; border-radius: 999px; background: var(--surface-3); position: relative; flex-shrink: 0; cursor: pointer; }
+  .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 19px; height: 19px; border-radius: 50%; background: var(--text-muted); transition: all .15s; }
+  .toggle.on { background: var(--accent); }
+  .toggle.on::after { left: 19px; background: var(--accent-ink); }
+  .status-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 999px; }
+  .status-pill.ok { background: var(--accent-ink); color: var(--accent); }
+  .seg { display: flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; flex-shrink: 0; }
+  .seg-btn { background: transparent; border: none; border-left: 1px solid var(--border); color: var(--text-dim); font-family: var(--sans); font-size: 12.5px; font-weight: 600; padding: 6px 14px; cursor: pointer; }
+  .seg-btn:first-child { border-left: none; }
+  .seg-btn.active { background: var(--surface-3); color: var(--text); }
+  .ignored-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 4px 6px 4px 12px; font-size: 12px; color: var(--text); }
+  .ignored-chip button { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 13px; width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+  .ignored-chip button:hover { background: color-mix(in srgb, var(--danger) 20%, transparent); color: var(--danger); }
+
+  /* Sheet de detalhe da sessão — vidro flutuante, o elemento mais
+     "liquid glass" do sistema: translúcido, brilho fino no topo, sombra
+     funda embaixo pra parecer que está pairando sobre o resto. */
+  .modal-overlay {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 600; padding: 20px;
+    background: rgba(0,0,0,.32);
+    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px);
+  }
+  .modal-overlay.hidden { display: none; }
+  .modal-card {
+    position: relative; background: var(--surface-glass);
+    -webkit-backdrop-filter: blur(30px) saturate(180%);
+    backdrop-filter: blur(30px) saturate(180%);
+    border: 1px solid var(--border);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 24px 60px rgba(0,0,0,.35);
+    border-radius: 18px; padding: 26px; width: min(640px, 92vw); max-height: 86vh; overflow-y: auto;
+  }
+  .modal-close { position: absolute; top: 16px; right: 16px; }
+  .modal-title { font-size: 17px; font-weight: 700; padding-right: 30px; }
+  .modal-sub { font-family: var(--mono); font-size: 12px; color: var(--text-muted); margin-top: 6px; line-height: 1.6; }
+  .modal-section { border-top: 1px solid var(--border-soft); margin-top: 18px; padding-top: 18px; }
+  .modal-section-head { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 10px; }
+  .modal-section-head svg { color: var(--accent); width: 15px; height: 15px; }
+  .modal-danger .modal-section-head svg { color: var(--danger); }
+  .modal-input { width: 100%; box-sizing: border-box; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 9px 12px; font-size: 13.5px; font-family: var(--sans); }
+  .modal-send-row { display: flex; gap: 8px; align-items: center; }
+  .modal-hint { font-size: 11.5px; color: var(--text-muted); margin-top: 6px; }
+  .modal-check { display: flex; align-items: flex-start; gap: 7px; font-size: 12.5px; color: var(--text-dim); margin-top: 10px; cursor: pointer; }
+
+  /* Ocorrências agrupadas por proximidade (>=15min de intervalo real vira um
+     cluster novo) — colapsadas por padrão, lista de texto simples (sem
+     timeline visual), não a parede de dezenas de linhas de antes. */
+  .occ-clusters { margin-top: 10px; max-height: 220px; overflow-y: auto; border: 1px solid var(--border-soft); border-radius: 10px; }
+  .occ-cluster { border-top: 1px solid var(--border-soft); }
+  .occ-cluster:first-child { border-top: none; }
+  .occ-cluster-head {
+    width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    background: none; border: none; color: var(--text-dim); font-family: var(--mono); font-size: 12px;
+    padding: 8px 10px; cursor: pointer; text-align: left;
+  }
+  .occ-cluster-head:hover { background: var(--surface-2); color: var(--text); }
+  .occ-chevron { flex-shrink: 0; transition: transform .12s; color: var(--text-muted) !important; }
+  .occ-cluster-body { padding: 0 10px 8px 20px; font-family: var(--mono); font-size: 11.5px; color: var(--text-muted); }
+  .occ-row { padding: 2px 0; }
 </style>
 </head>
 <body>
-<header>
-  <div style="display:flex;align-items:center;gap:12px">
-    <svg height="28" viewBox="0 0 967 100" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="TRACKER" style="display:block;max-width:180px;width:auto">
-      <path d="M19.7033 1.61764H131.454L111.75 27.2059H76.6077V100H46.1705V27.2059H0L19.7033 1.61764Z" fill="white"/>
-      <path d="M252.198 80.8824L270.284 100H229.554L207.645 73.9706H160.887V100H130.45V49.7059H216.027C225.437 49.7059 232.789 45.4412 232.789 38.6765C232.789 31.0294 226.466 27.2059 216.027 27.2059H130.45L150.3 1.61764H213.527C235.877 1.61764 264.109 8.67646 264.109 36.7647C264.109 52.0588 254.551 64.7059 238.377 67.9412C241.759 70.4412 245.435 73.9706 252.198 80.8824Z" fill="white"/>
-      <path d="M437.239 100H322.842L341.222 74.7059H365.924C371.806 74.7059 378.717 74.7059 383.422 75C380.775 71.4706 376.658 65.4412 373.424 60.7353L355.779 34.7059L309.608 100H273.584L336.664 11.0294C340.781 5.29411 346.809 0 356.367 0C365.483 0 371.512 4.85294 375.776 11.0294L437.239 100Z" fill="white"/>
-      <path d="M489.177 74.7059H558.139L538.582 100H489.177C455.064 100 429.92 78.3824 429.92 49.8529C429.92 21.0294 455.064 1.61764 489.177 1.61764H558.139L538.582 27.2059H489.177C472.709 27.2059 460.357 37.0588 460.357 51.1765C460.357 65.1471 472.562 74.7059 489.177 74.7059Z" fill="white"/>
-      <path d="M652.075 67.5L692.805 100H646.782L617.08 74.1176C606.934 65.2941 602.229 61.0294 598.847 57.6471C598.994 62.2059 599.288 67.0588 599.288 71.7647V100H568.704V1.61764H599.288V24.4118C599.288 30.4412 598.994 36.4706 598.7 41.6176C602.523 38.0882 607.816 33.0882 616.786 25.5882L645.164 1.61764H689.276L651.634 29.8529C638.548 39.7059 632.519 44.1176 626.196 47.9412C631.784 51.7647 639.43 57.2059 652.075 67.5Z" fill="white"/>
-      <path d="M733.404 74.7059H817.07L797.514 100H702.82V1.61764H816.776L797.073 27.2059H733.404V38.9706H811.335L793.838 61.3235H733.404V74.7059Z" fill="white"/>
-      <path d="M948.914 80.8824L967 100H926.27L904.361 73.9706H857.602V100H827.165V49.7059H912.742C922.153 49.7059 929.505 45.4412 929.505 38.6765C929.505 31.0294 923.182 27.2059 912.742 27.2059H827.165L847.016 1.61764H910.243C932.593 1.61764 960.824 8.67646 960.824 36.7647C960.824 52.0588 951.267 64.7059 935.092 67.9412C938.474 70.4412 942.15 73.9706 948.914 80.8824Z" fill="white"/>
-    </svg>
-    <div class="subtitle">Rastreador automático de atividades</div>
-  </div>
-  <span class="badge-live">AO VIVO</span>
-  <div class="header-actions">
-    <button class="btn" onclick="loadData()">&#8635; Atualizar</button>
-    <button class="btn btn-green" onclick="exportData()">&#8595; Exportar CSV</button>
-    <button class="btn-icon" onclick="openSettings()" title="Configurações">&#9881;</button>
-  </div>
-</header>
 
-<div id="settings-overlay" class="settings-overlay hidden" onclick="if(event.target===this)closeSettings()">
-  <div class="settings-panel">
-    <div class="settings-head">
-      <h2>Configurações</h2>
-      <button class="settings-close" onclick="closeSettings()">&#10005;</button>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <svg viewBox="0 0 967 100" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="TRACKER">
+        <path d="M19.7033 1.61764H131.454L111.75 27.2059H76.6077V100H46.1705V27.2059H0L19.7033 1.61764Z" fill="currentColor"/>
+        <path d="M252.198 80.8824L270.284 100H229.554L207.645 73.9706H160.887V100H130.45V49.7059H216.027C225.437 49.7059 232.789 45.4412 232.789 38.6765C232.789 31.0294 226.466 27.2059 216.027 27.2059H130.45L150.3 1.61764H213.527C235.877 1.61764 264.109 8.67646 264.109 36.7647C264.109 52.0588 254.551 64.7059 238.377 67.9412C241.759 70.4412 245.435 73.9706 252.198 80.8824Z" fill="currentColor"/>
+        <path d="M437.239 100H322.842L341.222 74.7059H365.924C371.806 74.7059 378.717 74.7059 383.422 75C380.775 71.4706 376.658 65.4412 373.424 60.7353L355.779 34.7059L309.608 100H273.584L336.664 11.0294C340.781 5.29411 346.809 0 356.367 0C365.483 0 371.512 4.85294 375.776 11.0294L437.239 100Z" fill="currentColor"/>
+        <path d="M489.177 74.7059H558.139L538.582 100H489.177C455.064 100 429.92 78.3824 429.92 49.8529C429.92 21.0294 455.064 1.61764 489.177 1.61764H558.139L538.582 27.2059H489.177C472.709 27.2059 460.357 37.0588 460.357 51.1765C460.357 65.1471 472.562 74.7059 489.177 74.7059Z" fill="currentColor"/>
+        <path d="M652.075 67.5L692.805 100H646.782L617.08 74.1176C606.934 65.2941 602.229 61.0294 598.847 57.6471C598.994 62.2059 599.288 67.0588 599.288 71.7647V100H568.704V1.61764H599.288V24.4118C599.288 30.4412 598.994 36.4706 598.7 41.6176C602.523 38.0882 607.816 33.0882 616.786 25.5882L645.164 1.61764H689.276L651.634 29.8529C638.548 39.7059 632.519 44.1176 626.196 47.9412C631.784 51.7647 639.43 57.2059 652.075 67.5Z" fill="currentColor"/>
+        <path d="M733.404 74.7059H817.07L797.514 100H702.82V1.61764H816.776L797.073 27.2059H733.404V38.9706H811.335L793.838 61.3235H733.404V74.7059Z" fill="currentColor"/>
+        <path d="M948.914 80.8824L967 100H926.27L904.361 73.9706H857.602V100H827.165V49.7059H912.742C922.153 49.7059 929.505 45.4412 929.505 38.6765C929.505 31.0294 923.182 27.2059 912.742 27.2059H827.165L847.016 1.61764H910.243C932.593 1.61764 960.824 8.67646 960.824 36.7647C960.824 52.0588 951.267 64.7059 935.092 67.9412C938.474 70.4412 942.15 73.9706 948.914 80.8824Z" fill="currentColor"/>
+      </svg>
     </div>
-    <div class="settings-body">
-      <div class="settings-row">
-        <div class="settings-lbl">
-          <strong>Rastrear em segundo plano</strong>
-          <span>Continua registrando atividades mesmo com o painel fechado</span>
-        </div>
-        <div class="tog" id="tog-bg" onclick="toggleBackground()"><div class="tog-knob"></div></div>
-      </div>
-      <div class="settings-row">
-        <div class="settings-lbl">
-          <strong>Iniciar no login</strong>
-          <span>Abre o painel automaticamente ao iniciar sessão</span>
-        </div>
-        <div class="tog" id="tog-login" onclick="toggleLogin()"><div class="tog-knob"></div></div>
-      </div>
-      <div class="settings-info">
-        <strong>Arquivo de dados</strong>
-        <span id="settings-data-dir">—</span>
-      </div>
-      <div class="settings-info">
-        <strong>Apps ignorados no rastreamento em segundo plano</strong>
-        <div id="ignored-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;"></div>
-        <div style="display:flex;gap:6px;margin-top:8px;">
-          <input id="ignored-new" class="settings-field" style="margin-top:0;" placeholder="Nome do processo (ex: Spotify)">
-          <button class="btn" onclick="addIgnoredProcess()">Adicionar</button>
-        </div>
-      </div>
-      <div class="settings-info">
-        <strong>Integração Jira / Tempo</strong>
-        <input id="jira-url" class="settings-field" placeholder="URL do Jira (ex: https://suaempresa.atlassian.net)">
-        <input id="jira-email" class="settings-field" placeholder="Seu e-mail do Jira">
-        <input id="jira-token" class="settings-field" type="password" placeholder="API token do Jira">
-        <input id="tempo-token" class="settings-field" type="password" placeholder="API token do Tempo">
-        <div style="display:flex;gap:8px;margin-top:8px;">
-          <button class="btn" onclick="saveJiraConfig()">Salvar</button>
-          <button class="btn" onclick="testJiraConnection()">Testar conexão</button>
-        </div>
-        <span id="jira-status" style="display:block;margin-top:6px;font-size:0.72rem;color:var(--text2);"></span>
-      </div>
-      <div class="settings-danger">
-        <button class="btn btn-danger" onclick="uninstallApp()">Desinstalar Activity Tracker</button>
+    <nav class="side-nav">
+      <button class="side-item active" onclick="showView('cal')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Calendário</button>
+      <button class="side-item" onclick="showView('res')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> Resumo</button>
+      <button class="side-item" onclick="showView('cfg')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> Configurações</button>
+    </nav>
+  </aside>
+
+  <div class="main-col">
+    <div class="toolbar">
+      <div class="toolbar-actions">
+        <!-- Pausar/retomar é escolha do usuário — diferente do banner de erro
+             (permissão do SO revogada), que é a captura parando sozinha. -->
+        <button class="btn" id="btn-pause-toggle" onclick="toggleCapture()">
+          <svg class="icon" id="icon-pause-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+          <span id="label-pause-toggle">Pausar captura</span>
+        </button>
+        <button class="btn" onclick="loadData()"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg> Atualizar</button>
+        <button class="btn btn-primary" onclick="exportData()"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9z"/><polyline points="13 3 13 9 19 9"/><path d="M9 15h6"/><polyline points="13 12 16 15 13 18"/></svg> Exportar CSV</button>
       </div>
     </div>
+
+    <div class="status-banner hidden" id="status-banner">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      <div class="status-text"><strong>Captura pausada.</strong> <span id="status-banner-text">O sistema revogou uma permissão necessária — nenhuma atividade nova está sendo registrada.</span></div>
+      <button class="btn status-action" onclick="openSettingsFromBanner()">Corrigir agora</button>
+    </div>
+    <div class="status-banner status-banner-manual hidden" id="status-banner-manual">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+      <div class="status-text"><strong>Captura pausada por você.</strong> Nenhuma atividade nova está sendo registrada até você retomar.</div>
+      <button class="btn status-action" onclick="toggleCapture()">Retomar captura</button>
+    </div>
+
+    <div class="daynav" id="daynav-wrap">
+      <button class="day-arrow" id="btn-prev-week" onclick="shiftWeek(-1)" title="Semana anterior com dados"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 6 9 12 15 18"/></svg></button>
+      <div class="days" id="date-nav"></div>
+      <button class="day-arrow" id="btn-next-week" onclick="shiftWeek(1)" title="Próxima semana com dados"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 6 15 12 9 18"/></svg></button>
+    </div>
+    <div id="week-range" class="week-range"></div>
+
+    <main>
+      <div id="view-cal">
+        <div class="section-head">
+          <div class="section-title">Calendário do dia</div>
+          <button class="btn" onclick="exportSessionsData()"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9z"/><polyline points="13 3 13 9 19 9"/><path d="M9 15h6"/><polyline points="13 12 16 15 13 18"/></svg> Exportar sessões</button>
+        </div>
+        <div class="cal-filter">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="cal-filter-input" oninput="applyCalFilter()" placeholder="Filtrar por nome da atividade..." aria-label="Filtrar atividades do dia">
+        </div>
+        <div class="panel" id="week-calendar-panel">
+          <div id="week-calendar"></div>
+        </div>
+        <div class="legend">
+          <div class="legend-item"><span class="legend-swatch" style="background:var(--accent)"></span>Navegador / App</div>
+          <div class="legend-item"><span class="legend-swatch" style="background:var(--cat-meeting)"></span>Reunião Teams</div>
+          <div class="legend-item"><span class="legend-swatch" style="background:var(--cat-chat)"></span>Chat Teams</div>
+          <div class="legend-item"><span class="legend-swatch" style="background:var(--cat-teams-app)"></span>Teams (app)</div>
+          <div class="legend-item"><span class="legend-swatch" style="background:var(--cat-idle)"></span>Ocioso</div>
+        </div>
+      </div>
+
+      <div id="view-res" class="hidden">
+        <div id="content"><div class="empty">Carregando dados...</div></div>
+      </div>
+
+      <!-- Miller (1956): mais de 5-7 itens simultâneos sobrecarrega memória
+           de trabalho — os controles viram grupos nomeados em vez de uma
+           lista solta, então a pessoa só precisa lembrar "em qual grupo",
+           não escanear tudo de uma vez. -->
+      <div id="view-cfg" class="hidden">
+        <div class="cfg-group">
+          <div class="cfg-group-head"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg> Aparência</div>
+          <div class="cfg-row">
+            <div><strong>Tema</strong><span>Escuro por padrão — claro pra ambientes muito iluminados</span></div>
+            <div class="seg" role="radiogroup" aria-label="Tema">
+              <button class="seg-btn active" id="theme-btn-dark" onclick="setTheme('dark')">Escuro</button>
+              <button class="seg-btn" id="theme-btn-light" onclick="setTheme('light')">Claro</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="cfg-group">
+          <div class="cfg-group-head"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> Rastreamento</div>
+          <div class="cfg-row">
+            <div><strong>Rastrear em segundo plano</strong><span>Continua registrando mesmo com o painel fechado</span></div>
+            <div class="toggle" id="tog-bg" onclick="toggleBackground()"></div>
+          </div>
+          <div class="cfg-row">
+            <div><strong>Iniciar no login</strong><span>Abre o painel automaticamente ao iniciar sessão</span></div>
+            <div class="toggle" id="tog-login" onclick="toggleLogin()"></div>
+          </div>
+          <div class="cfg-row" style="display:block;">
+            <strong>Apps ignorados no rastreamento em segundo plano</strong>
+            <div id="ignored-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;"></div>
+            <div style="display:flex;gap:6px;margin-top:10px;">
+              <input id="ignored-new" class="cfg-field" style="margin-top:0;" placeholder="Nome do processo (ex: Spotify)">
+              <button class="btn" onclick="addIgnoredProcess()">Adicionar</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="cfg-group">
+          <div class="cfg-group-head"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.07 0l2.83-2.83a5 5 0 0 0-7.07-7.07l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.07 0l-2.83 2.83a5 5 0 0 0 7.07 7.07l1.5-1.5"/></svg> Integração Jira / Tempo</div>
+          <input id="jira-url" class="cfg-field" placeholder="URL do Jira (ex: https://suaempresa.atlassian.net)">
+          <input id="jira-email" class="cfg-field" placeholder="Seu e-mail do Jira">
+          <input id="jira-token" class="cfg-field" type="password" placeholder="API token do Jira">
+          <input id="tempo-token" class="cfg-field" type="password" placeholder="API token do Tempo">
+          <div style="display:flex;gap:8px;margin-top:10px;">
+            <button class="btn" onclick="saveJiraConfig()">Salvar</button>
+            <button class="btn" onclick="testJiraConnection()">Testar conexão</button>
+          </div>
+          <span id="jira-status" class="modal-hint" style="display:block;margin-top:8px;"></span>
+        </div>
+
+        <!-- Agrupamento é decisão do usuário, aberta — não regra escondida:
+             ele quem escolhe o nome de grupo direto no card de cada
+             atividade (no calendário), não numa lista central editável
+             aqui. -->
+        <div class="cfg-group">
+          <div class="cfg-group-head"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg> Agrupamento de atividades</div>
+          <div class="cfg-row">
+            <div><strong>Regra padrão</strong><span>Agrupa por aplicativo + categoria automaticamente</span></div>
+          </div>
+          <div class="cfg-row">
+            <div><strong>Nome personalizado</strong><span>Clique numa atividade no calendário e edite o nome do grupo ali — vale também pras próximas vezes que ela aparecer</span></div>
+          </div>
+        </div>
+
+        <div class="cfg-group">
+          <div class="cfg-group-head"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.66 3.58 3 8 3s8-1.34 8-3V6"/><path d="M4 12v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg> Dados</div>
+          <div class="cfg-row">
+            <div><strong>Arquivo de dados</strong><span class="mono-path" id="settings-data-dir">—</span></div>
+          </div>
+        </div>
+
+        <div class="cfg-group cfg-danger">
+          <div class="cfg-group-head"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Zona de risco</div>
+          <div class="cfg-row">
+            <div><strong>Desinstalar Activity Tracker</strong><span>Remove o app e, se você quiser, o histórico</span></div>
+            <button class="btn btn-danger-o" onclick="uninstallApp()">Desinstalar</button>
+          </div>
+        </div>
+      </div>
+    </main>
   </div>
 </div>
 
 <div id="session-modal-overlay" class="modal-overlay hidden" onclick="if(event.target===this)closeSessionModal()">
   <div class="modal-card">
-    <button class="settings-close" style="position:absolute;top:14px;right:14px;" onclick="closeSessionModal()">&#10005;</button>
+    <button class="btn-icon modal-close" aria-label="Fechar" onclick="closeSessionModal()"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     <div id="modal-body"></div>
   </div>
-</div>
-
-<div class="container">
-  <div class="date-nav">
-    <button class="week-nav-btn" id="btn-prev-week" onclick="shiftWeek(-1)" title="Semana anterior com dados">&#8249;</button>
-    <div class="week-days" id="date-nav"></div>
-    <button class="week-nav-btn" id="btn-next-week" onclick="shiftWeek(1)" title="Próxima semana com dados">&#8250;</button>
-  </div>
-  <div id="week-range" class="week-range"></div>
-
-  <div class="panel" id="week-calendar-panel" style="margin-bottom:20px;">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
-      <div class="panel-title" style="margin-bottom:0">Calendário do dia (clique numa atividade pra ver detalhes)</div>
-      <button class="btn" onclick="exportSessionsData()">&#8595; Exportar sessões</button>
-    </div>
-    <div id="week-calendar"></div>
-  </div>
-
-  <div id="content"><div class="empty">Carregando dados...</div></div>
 </div>
 
 <script src="/vendor/fullcalendar.min.js"></script>
@@ -593,7 +888,7 @@ const DAY_NAMES = ['DOM', 'SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB'];
 function getWeekStart(dateStr) {
   const d = new Date((dateStr || new Date().toISOString().slice(0,10)) + 'T00:00:00');
   const dow = d.getDay();
-  d.setDate(d.getDate() - (dow === 0 ? 6 : dow - 1)); // recua até segunda-feira
+  d.setDate(d.getDate() - (dow === 0 ? 6 : dow - 1));
   return d.toISOString().slice(0, 10);
 }
 
@@ -603,22 +898,21 @@ function addDays(dateStr, n) {
   return d.toISOString().slice(0, 10);
 }
 
-const CAT_ICONS = {
-  teams_meeting: '&#128249;',
-  teams_chat: '&#128172;',
-  teams_app: '&#128995;',
-  browser: '&#127760;',
-  app: '&#128187;',
-  idle: '&#128164;',
-};
 const CAT_COLORS = {
-  teams_meeting: '#8b5cf6',
-  teams_chat: '#06b6d4',
-  teams_app: '#7c3aed',
-  browser: '#10b981',
-  app: '#f59e0b',
-  idle: '#475569',
+  teams_meeting: 'var(--cat-meeting)',
+  teams_chat: 'var(--cat-chat)',
+  teams_app: 'var(--cat-teams-app)',
+  browser: 'var(--accent)',
+  app: 'var(--cat-app)',
+  idle: 'var(--cat-idle)',
 };
+function catColor(cat) {
+  // resolve a var() pro hex de verdade — precisamos do valor real pra
+  // desenhar dentro do canvas/DOM do FullCalendar, não só referenciar CSS.
+  return getComputedStyle(document.documentElement).getPropertyValue(
+    { teams_meeting: '--cat-meeting', teams_chat: '--cat-chat', teams_app: '--cat-teams-app', browser: '--accent', app: '--cat-app', idle: '--cat-idle' }[cat] || '--cat-idle'
+  ).trim();
+}
 
 function fmtDur(s) {
   if (!s || s <= 0) return '—';
@@ -643,7 +937,7 @@ async function loadData() {
     }
     const dates = Object.keys(allData).sort().reverse();
     if (dates.length === 0) {
-      document.getElementById('content').innerHTML = '<div class="empty">Nenhum registro encontrado.<br>Inicie o <strong>INICIAR.bat</strong> para começar a rastrear.</div>';
+      document.getElementById('content').innerHTML = '<div class="empty">Nenhum registro encontrado.</div>';
       return;
     }
     if (!selectedDate || !allData[selectedDate]) selectedDate = dates[0];
@@ -667,21 +961,16 @@ function renderDateNav(dates) {
     const isToday   = d === today;
     const hasData   = dateset.has(d);
     const cls = ['date-btn', isActive ? 'active' : '', isToday ? 'today' : '', !hasData ? 'no-data' : ''].filter(Boolean).join(' ');
-    html += `<button class="${cls}" onclick="selectDate('${d}')">${DAY_NAMES[dow]}<span class="date-day">${day}/${m}</span></button>`;
+    html += `<button class="${cls}" onclick="selectDate('${d}')"><span class="dow">${DAY_NAMES[dow]}</span><span class="date-day">${day}/${m}</span></button>`;
   }
   document.getElementById('date-nav').innerHTML = html;
-  // Rótulo da semana
   const wEnd = addDays(currentWeekStart, 6);
   const [, sm, sd] = currentWeekStart.split('-');
   const [, em, ed] = wEnd.split('-');
   const rangeEl = document.getElementById('week-range');
   if (rangeEl) rangeEl.textContent = `${sd}/${sm} – ${ed}/${em}`;
-  // Desabilita › se já estamos na semana atual
   const nextBtn = document.getElementById('btn-next-week');
-  if (nextBtn) {
-    const atCurrent = currentWeekStart >= getWeekStart(today);
-    nextBtn.disabled = atCurrent;
-  }
+  if (nextBtn) nextBtn.disabled = currentWeekStart >= getWeekStart(today);
   updateWeekCalendar();
 }
 
@@ -695,7 +984,6 @@ function selectDate(d) {
 function shiftWeek(dir) {
   const dateset = new Set(Object.keys(allData));
   let tempStart = addDays(currentWeekStart, dir * 7);
-  // Pula semanas sem dados (até 104 semanas = 2 anos)
   for (let attempts = 0; attempts < 104; attempts++) {
     let hasData = false;
     for (let i = 0; i < 7; i++) {
@@ -705,7 +993,6 @@ function shiftWeek(dir) {
     tempStart = addDays(tempStart, dir * 7);
   }
   currentWeekStart = tempStart;
-  // Seleciona o dia mais recente com dados na semana
   let best = null;
   for (let i = 6; i >= 0; i--) {
     const d = addDays(currentWeekStart, i);
@@ -717,13 +1004,13 @@ function shiftWeek(dir) {
     renderDay(selectedDate);
   } else {
     renderDateNav(Object.keys(allData).sort().reverse());
-    document.getElementById('content').innerHTML = '<div class="empty">Nenhuma atividade registrada nesta semana.<br>Use ‹ › para navegar entre semanas.</div>';
+    document.getElementById('content').innerHTML = '<div class="empty">Nenhuma atividade registrada nesta semana.</div>';
   }
 }
 
 async function exportData() {
   if (typeof pywebview !== 'undefined' && pywebview.api) {
-    await pywebview.api.export_csv(selectedDate || null); // abre diálogo nativo de salvar
+    await pywebview.api.export_csv(selectedDate || null);
   } else {
     window.location.href = '/export/csv' + (selectedDate ? '?date=' + selectedDate : '');
   }
@@ -742,41 +1029,37 @@ function renderDay(d) {
 
   let html = '';
 
-  // ── Summary cards ──────────────────────────────────────────────────────────
   html += '<div class="summary-grid">';
   const cards = [
-    { label: 'Tempo ativo', value: fmtDur(totalActive), cls: 'c-active', dot: 'dot-active' },
-    { label: 'Reuniões Teams', value: fmtDur(totals.teams_meeting||0), cls: 'c-meeting', dot: 'dot-meeting' },
-    { label: 'Chat Teams', value: fmtDur(totals.teams_chat||0), cls: 'c-chat', dot: 'dot-chat' },
-    { label: 'Navegador', value: fmtDur(totals.browser||0), cls: 'c-browser', dot: 'dot-browser' },
-    { label: 'Outros apps', value: fmtDur(totals.app||0), cls: 'c-app', dot: 'dot-app' },
-    { label: 'Ocioso', value: fmtDur(totals.idle||0), cls: 'c-idle', dot: 'dot-idle' },
+    { label: 'Tempo ativo', value: fmtDur(totalActive), dot: 'dot-active' },
+    { label: 'Reuniões Teams', value: fmtDur(totals.teams_meeting||0), dot: 'dot-meeting' },
+    { label: 'Chat Teams', value: fmtDur(totals.teams_chat||0), dot: 'dot-chat' },
+    { label: 'Navegador', value: fmtDur(totals.browser||0), dot: 'dot-browser' },
+    { label: 'Outros apps', value: fmtDur(totals.app||0), dot: 'dot-app' },
+    { label: 'Ocioso', value: fmtDur(totals.idle||0), dot: 'dot-idle' },
   ];
   for (const c of cards) {
-    html += `<div class="summary-card"><div class="label"><span class="dot ${c.dot}"></span>${c.label}</div><div class="value ${c.cls}">${c.value}</div></div>`;
+    html += `<div class="summary-card"><div class="label"><span class="dot ${c.dot}"></span>${c.label}</div><div class="value">${c.value}</div></div>`;
   }
   html += '</div>';
 
-  // ── Gráfico por hora ───────────────────────────────────────────────────────
-  const hours = Array.from({length: 13}, (_, i) => i + 7); // 7h às 19h
+  const hours = Array.from({length: 13}, (_, i) => i + 7);
   const maxHourly = Math.max(...hours.map(h => hourly[h] || 0), 1);
   html += '<div class="panel chart-wrap"><div class="panel-title">Atividade por hora</div>';
   html += '<div class="chart-bars">';
   for (const h of hours) {
     const secs = hourly[h] || 0;
     const pct = Math.round((secs / maxHourly) * 100);
-    const tip = `${h}h: ${fmtDur(secs)}`;
-    html += `<div class="chart-bar-col" title="${tip}">
+    html += `<div class="chart-bar-col" title="${h}h: ${fmtDur(secs)}">
       <div class="chart-bar" style="height:${pct}%"></div>
       <div class="chart-label">${h}h</div>
     </div>`;
   }
   html += '</div></div>';
 
-  // ── Top listas ─────────────────────────────────────────────────────────────
   html += '<div class="two-col">';
-  html += renderTopPanel('Reuniões & Chats Teams', summary.details, ['teams_meeting','teams_chat'], '#8b5cf6', '#06b6d4');
-  html += renderTopPanel('Navegador & Aplicativos', summary.details, ['browser','app'], '#10b981', '#f59e0b');
+  html += renderTopPanel('Reuniões & Chats Teams', summary.details, ['teams_meeting','teams_chat'], 'var(--cat-meeting)', 'var(--cat-chat)');
+  html += renderTopPanel('Navegador & Aplicativos', summary.details, ['browser','app'], 'var(--accent)', 'var(--cat-app)');
   html += '</div>';
 
   document.getElementById('content').innerHTML = html;
@@ -784,47 +1067,90 @@ function renderDay(d) {
 
 let currentModalRow = null;
 
-// ── Modal de detalhe da sessão (aberta pelo clique num evento do calendário) ─
+// Funde ocorrências cruas cujo intervalo entre uma e a próxima seja menor
+// que gapMinutes num único cluster de exibição — mesmo critério de
+// continuidade usado no motor de captura (tracker.py: SESSION_GAP_SECONDS),
+// não um número arbitrário diferente. É rede de segurança pra dados antigos
+// já fragmentados; dados novos já vêm com bem menos ocorrências brutas.
+function clusterOccurrences(items, gapMinutes = 15) {
+  const sorted = [...items].sort((a, b) => a.start.localeCompare(b.start));
+  const gapMs = gapMinutes * 60 * 1000;
+  const clusters = [];
+  for (const s of sorted) {
+    const last = clusters[clusters.length - 1];
+    if (last && new Date(s.start) - new Date(last.end) <= gapMs) {
+      if (s.end > last.end) last.end = s.end;
+      last.total_seconds += s.total_seconds || 0;
+      last.foreground_seconds += s.foreground_seconds || 0;
+      last.items.push(s);
+    } else {
+      clusters.push({ start: s.start, end: s.end, total_seconds: s.total_seconds || 0, foreground_seconds: s.foreground_seconds || 0, items: [s] });
+    }
+  }
+  return clusters;
+}
+
+function toggleOccCluster(i) {
+  const body = document.getElementById('occ-cluster-' + i);
+  const chevron = document.getElementById('occ-chevron-' + i);
+  const nowHidden = body.classList.toggle('hidden');
+  chevron.style.transform = nowHidden ? '' : 'rotate(180deg)';
+}
 
 function renderSessionModal(row) {
   currentModalRow = row;
-  const label = row.detail || row.process || '—';
+  const label = row.displayLabel || row.groupLabel || row.detail || row.process || '—';
   const totalMin = Math.max(Math.round(row.total / 60), 1);
-  const occurrences = [...row.items].sort((a, b) => a.start.localeCompare(b.start));
-  const occHtml = occurrences.map(s =>
-    `${s.start.slice(11, 16)}–${s.end.slice(11, 16)} — ${fmtDur(s.total_seconds)} aberto, ${fmtDur(s.foreground_seconds)} em foco`
-  ).join('<br>');
+  const hm = (iso) => iso.slice(11, 16);
+  const clusters = clusterOccurrences(row.items);
+  const clustersHtml = clusters.map((c, i) => `
+    <div class="occ-cluster">
+      <button type="button" class="occ-cluster-head" onclick="toggleOccCluster(${i})">
+        <span>${hm(c.start)}–${hm(c.end)} · ${c.items.length} ocorrência${c.items.length > 1 ? 's' : ''} · ${fmtDur(c.foreground_seconds)} em foco</span>
+        <svg class="icon occ-chevron" id="occ-chevron-${i}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="occ-cluster-body hidden" id="occ-cluster-${i}">
+        ${c.items.map(s => `<div class="occ-row">${hm(s.start)}–${hm(s.end)} — ${fmtDur(s.total_seconds)} no total, ${fmtDur(s.foreground_seconds)} em foco</div>`).join('')}
+      </div>
+    </div>`).join('');
   const applyLabelRow = row.key ? `
-    <label style="display:flex;align-items:flex-start;gap:6px;margin-top:8px;font-size:0.76rem;color:var(--text2);cursor:pointer;">
-      <input type="checkbox" id="modal-apply-label" style="margin-top:2px;">
-      <span>Usar esse código sempre que aparecer "<strong style="color:var(--text)">${esc(label.slice(0, 40))}</strong>" (inclusive em dias futuros)</span>
-    </label>` : '';
+    <label class="modal-check"><input type="checkbox" id="modal-apply-label"> <span>Usar esse código sempre que aparecer "<strong style="color:var(--text)">${esc(label.slice(0, 40))}</strong>" (inclusive em dias futuros)</span></label>` : '';
 
   document.getElementById('modal-body').innerHTML = `
     <div class="modal-title">${esc(label)}</div>
-    <div class="modal-sub">${occurrences.length} ocorrência(s) — ${fmtDur(row.total)} no total<br>${occHtml}</div>
+    <div class="modal-sub">${row.items.length} ocorrência(s) — ${fmtDur(row.total)} no total</div>
+    <div class="occ-clusters">${clustersHtml}</div>
 
-    <label class="modal-label">Código Jira / Tempo</label>
-    <input id="modal-code" class="settings-field" value="${esc(row.code || '')}" placeholder="Ex: PROJ-123">
-    ${applyLabelRow}
-    <div class="modal-actions">
-      <button class="btn" onclick="saveModalCode()">Salvar código</button>
-      <button class="btn" style="border-color:#ef4444;color:#ef4444;" onclick="deleteModalSessions()">Excluir</button>
+    <div class="modal-section">
+      <div class="modal-section-head"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41 12 22l-9-9V4a2 2 0 0 1 2-2h9l6.59 6.59a2 2 0 0 1 0 2.82z"/><circle cx="7.5" cy="7.5" r="1.5"/></svg> Código Jira / Tempo</div>
+      <input id="modal-code" class="modal-input" value="${esc(row.code || '')}" placeholder="Ex: PROJ-123">
+      ${applyLabelRow}
+      <button class="btn" style="margin-top:10px;width:100%;justify-content:center;" onclick="saveModalCode()">Salvar código</button>
     </div>
-    <label style="display:flex;align-items:flex-start;gap:6px;margin-top:8px;font-size:0.76rem;color:var(--text2);cursor:pointer;">
-      <input type="checkbox" id="modal-stop-tracking" style="margin-top:2px;">
-      <span>Também parar de rastrear "<strong style="color:var(--text)">${esc((row.process || '').slice(0, 40))}</strong>" — some da lista em Configurações → Apps ignorados, onde dá pra reverter a qualquer momento</span>
-    </label>
 
-    <hr style="border:none;border-top:1px solid var(--border);margin:16px 0;">
-
-    <label class="modal-label">Enviar apontamento pro Tempo</label>
-    <div style="display:flex;gap:8px;">
-      <input id="modal-send-code" class="settings-field" style="flex:2" placeholder="Issue (ex: PROJ-123)" value="${esc(row.code || '')}">
-      <input id="modal-send-minutes" class="settings-field" style="flex:1" type="number" min="1" value="${totalMin}">
+    <div class="modal-section">
+      <div class="modal-section-head"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg> Agrupamento</div>
+      <div class="modal-hint" style="margin-top:0;margin-bottom:8px;">Atividades com o mesmo nome de grupo viram um bloco só no calendário. Por padrão agrupamos por app + categoria — mas você pode mudar (vale pras próximas vezes também).</div>
+      <input id="modal-group-name" class="modal-input" value="${esc(label)}" placeholder="Nome do grupo">
+      <button class="btn" style="margin-top:10px;width:100%;justify-content:center;" onclick="saveModalGroup()">Salvar nome do grupo</button>
     </div>
-    <button class="btn btn-green" style="margin-top:8px;width:100%;" onclick="sendModalWorklog()">Enviar pro Tempo</button>
-    <div id="modal-status" style="margin-top:8px;font-size:0.76rem;color:var(--text2);"></div>
+
+    <div class="modal-section">
+      <div class="modal-section-head"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> Apontar no Tempo</div>
+      <div class="modal-send-row">
+        <input id="modal-send-code" class="modal-input" style="flex:2" placeholder="Issue (ex: PROJ-123)" value="${esc(row.code || '')}">
+        <input id="modal-send-minutes" class="modal-input" style="flex:1" type="number" min="1" value="${totalMin}">
+        <span style="color:var(--text-muted);font-size:12.5px;">min</span>
+      </div>
+      <button class="btn btn-primary" style="margin-top:10px;width:100%;justify-content:center;" onclick="sendModalWorklog()">Enviar apontamento</button>
+      <div id="modal-status" class="modal-hint"></div>
+    </div>
+
+    <div class="modal-section modal-danger">
+      <div class="modal-section-head"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg> Excluir</div>
+      <label class="modal-check"><input type="checkbox" id="modal-stop-tracking"> <span>Também parar de rastrear "<strong style="color:var(--text)">${esc((row.process || '').slice(0, 40))}</strong>" — reversível em Configurações → Apps ignorados</span></label>
+      <button class="btn" style="margin-top:10px;width:100%;justify-content:center;border-color:var(--danger-border);color:var(--danger);" onclick="deleteModalSessions()">Excluir esta atividade</button>
+    </div>
   `;
   document.getElementById('session-modal-overlay').classList.remove('hidden');
 }
@@ -833,11 +1159,12 @@ function closeSessionModal() {
   document.getElementById('session-modal-overlay').classList.add('hidden');
   currentModalRow = null;
 }
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSessionModal(); });
 
 async function saveModalCode() {
   if (!currentModalRow) return;
   const statusEl = document.getElementById('modal-status');
-  if (typeof pywebview === 'undefined' || !pywebview.api) { statusEl.textContent = 'Disponível só no aplicativo desktop.'; return; }
+  if (typeof pywebview === 'undefined' || !pywebview.api) return;
   const code = document.getElementById('modal-code').value.trim();
   const applyLabelEl = document.getElementById('modal-apply-label');
   const applyToLabel = applyLabelEl ? applyLabelEl.checked : false;
@@ -846,11 +1173,23 @@ async function saveModalCode() {
   loadData();
 }
 
+async function saveModalGroup() {
+  if (!currentModalRow) return;
+  if (typeof pywebview === 'undefined' || !pywebview.api) return;
+  const name = document.getElementById('modal-group-name').value.trim();
+  const defaultLabel = currentModalRow.detail || currentModalRow.process || '';
+  // Se voltou a ser igual ao rótulo automático, remove o override em vez de
+  // salvar um "personalizado" que é idêntico ao padrão.
+  await pywebview.api.set_group_override(currentModalRow.key, name === defaultLabel ? '' : name);
+  closeSessionModal();
+  loadData();
+}
+
 async function deleteModalSessions() {
   if (!currentModalRow) return;
-  const label = currentModalRow.detail || currentModalRow.process;
+  const label = currentModalRow.groupLabel || currentModalRow.detail || currentModalRow.process;
   if (!confirm(`Excluir "${label}" (${currentModalRow.items.length} ocorrência(s))? Essa ação não pode ser desfeita.`)) return;
-  if (typeof pywebview === 'undefined' || !pywebview.api) { alert('Disponível só no aplicativo desktop.'); return; }
+  if (typeof pywebview === 'undefined' || !pywebview.api) return;
   const stopTrackingEl = document.getElementById('modal-stop-tracking');
   const stopTracking = stopTrackingEl ? stopTrackingEl.checked : false;
   await pywebview.api.delete_sessions(currentModalRow.items.map(i => i.id));
@@ -867,7 +1206,7 @@ async function sendModalWorklog() {
   const code = document.getElementById('modal-send-code').value.trim();
   const minutes = parseFloat(document.getElementById('modal-send-minutes').value.replace(',', '.'));
   if (!code || !minutes || minutes <= 0) { statusEl.textContent = 'Preencha o código da issue e uma duração válida.'; return; }
-  if (typeof pywebview === 'undefined' || !pywebview.api) { statusEl.textContent = 'Disponível só no aplicativo desktop.'; return; }
+  if (typeof pywebview === 'undefined' || !pywebview.api) return;
   statusEl.textContent = 'Enviando...';
   const seconds = Math.round(minutes * 60);
   const r = await pywebview.api.send_worklog(currentModalRow.items.map(i => i.id), code, selectedDate, seconds, '');
@@ -898,7 +1237,7 @@ function renderTopPanel(title, details, cats, color1, color2) {
 
   let html = `<div class="panel"><div class="panel-title">${title}</div>`;
   if (items.length === 0) {
-    html += '<div style="color:var(--text2);font-size:.82rem;padding:6px 0">Nenhum registro</div>';
+    html += '<div style="color:var(--text-muted);font-size:12.5px;padding:6px 0">Nenhum registro</div>';
   }
   for (const it of items) {
     const pct = Math.round((it.secs / maxSecs) * 100);
@@ -915,6 +1254,7 @@ function renderTopPanel(title, details, cats, color1, color2) {
 // ── Calendário do dia (FullCalendar) ────────────────────────────────────────
 let weekCalendar = null;
 let weekCalendarShownDate = null;
+let calFilterTerm = '';
 
 function initWeekCalendar() {
   if (weekCalendar || typeof FullCalendar === 'undefined') return;
@@ -930,9 +1270,6 @@ function initWeekCalendar() {
     height: 620,
     nowIndicator: true,
     allDaySlot: false,
-    // Por padrão o FullCalendar empilha eventos concorrentes com leve
-    // deslocamento (staggered), o que fica ilegível com várias atividades
-    // no mesmo horário. Isso força colunas lado a lado de verdade.
     slotEventOverlap: false,
     eventOrder: (a, b) => (b.extendedProps.session?.total_seconds || 0) - (a.extendedProps.session?.total_seconds || 0),
     dayHeaderContent: (arg) => {
@@ -961,7 +1298,7 @@ function darkenColor(hex, amount) {
 
 function renderCalendarEventContent(arg) {
   const s = arg.event.extendedProps.session;
-  const color = CAT_COLORS[s.category] || '#64748b';
+  const color = catColor(s.category);
   const edgeColor = darkenColor(color, 0.45);
   const startMs = arg.event.start.getTime();
   const endMs = (arg.event.end || arg.event.start).getTime();
@@ -974,34 +1311,34 @@ function renderCalendarEventContent(arg) {
     const height = Math.max(((fEnd - fStart) / totalMs) * 100, 3);
     fgHtml += `<div class="fc-sess-fg" style="top:${top}%;height:${height}%;background:${color}"></div>`;
   }
+  const label = s.displayLabel || s.groupLabel || s.detail || s.process || '';
   const wrap = document.createElement('div');
   wrap.className = 'fc-sess-event';
   wrap.style.borderLeft = `4px solid ${edgeColor}`;
-  wrap.title = `${s.detail || s.process || ''} — ${fmtDur(s.total_seconds)} aberto, ${fmtDur(s.foreground_seconds)} em foco`;
-  wrap.innerHTML = `<div class="fc-sess-bg" style="background:${color}"></div>${fgHtml}<div class="fc-sess-label">${esc(s.detail || s.process || '')}</div>`;
+  wrap.title = `${label} — ${fmtDur(s.total_seconds)} no total, ${fmtDur(s.foreground_seconds)} em foco`;
+  wrap.innerHTML = `<div class="fc-sess-bg" style="background:${color}"></div>${fgHtml}<div class="fc-sess-content"><span class="fc-sess-label">${esc(label)}</span></div>`;
   return { domNodes: [wrap] };
 }
 
 function groupSessionsByLabel(sessions) {
-  // Uma sessão "crua" é criada toda vez que a captura perde e reencontra a
-  // mesma janela (falha momentânea do AppleScript, o app foi minimizado e
-  // reaberto, o computador dormiu, etc). Em vez de desenhar um evento por
-  // sessão crua (o que fragmenta a mesma atividade em vários blocos soltos
-  // espalhados pelo dia), agrupamos por nome (processo+categoria+detalhe) e
-  // desenhamos UMA barra só, do primeiro ao último horário em que apareceu —
-  // com a opacidade marcando onde teve atividade de verdade dentro dela.
+  // Uma sessão "crua" nasce toda vez que a captura perde e reencontra a
+  // mesma janela — em vez de um evento por sessão crua (fragmentado),
+  // agrupamos por rótulo (padrão: processo+categoria+detalhe, ou o nome de
+  // grupo personalizado que o usuário deu) e desenhamos UMA barra só.
   const groups = new Map();
   for (const s of sessions) {
-    const key = s.process + '::' + s.category + '::' + s.detail;
-    if (!groups.has(key)) {
-      groups.set(key, {
-        key, process: s.process, category: s.category, detail: s.detail,
+    const rawKey = s.process + '::' + s.category + '::' + s.detail;
+    const displayKey = s.group_label || rawKey;
+    if (!groups.has(displayKey)) {
+      groups.set(displayKey, {
+        key: rawKey, groupLabel: s.group_label || null,
+        process: s.process, category: s.category, detail: s.detail,
         start: s.start, end: s.end,
         total_seconds: 0, foreground_seconds: 0, foreground_ranges: [],
         code: null, items: [],
       });
     }
-    const g = groups.get(key);
+    const g = groups.get(displayKey);
     if (s.start < g.start) g.start = s.start;
     if (s.end > g.end) g.end = s.end;
     g.total_seconds += s.total_seconds || 0;
@@ -1012,9 +1349,21 @@ function groupSessionsByLabel(sessions) {
   }
   for (const g of groups.values()) {
     g.foreground_ranges.sort((a, b) => a[0].localeCompare(b[0]));
-    g.total = g.total_seconds; // alias esperado pela modal de detalhe
+    g.total = g.total_seconds;
+    // Categoria "app" é genérica — o detail é o título bruto da janela
+    // (ex: "Aplicativos", um nome de pasta) e sozinho não diz qual app é.
+    // As outras categorias já têm detail específico (nome da reunião,
+    // pessoa do chat, página do navegador), então não precisam do prefixo.
+    g.displayLabel = g.groupLabel || (g.category === 'app' && g.process && g.detail
+      ? `${g.process} — ${g.detail}`
+      : (g.detail || g.process));
   }
   return Array.from(groups.values());
+}
+
+function applyCalFilter() {
+  calFilterTerm = (document.getElementById('cal-filter-input').value || '').trim().toLowerCase();
+  updateWeekCalendar();
 }
 
 function updateWeekCalendar() {
@@ -1023,14 +1372,13 @@ function updateWeekCalendar() {
   const day = allData[selectedDate];
   if (day && day.sessions) {
     for (const g of groupSessionsByLabel(day.sessions)) {
+      const label = (g.groupLabel || g.detail || g.process || '').toLowerCase();
+      if (calFilterTerm && !label.includes(calFilterTerm)) continue;
       events.push({ start: g.start, end: g.end, extendedProps: { session: g } });
     }
   }
   weekCalendar.removeAllEventSources();
   weekCalendar.addEventSource(events);
-  // Só navega (o que reseta a posição de rolagem) quando o dia exibido
-  // realmente mudou — evita o calendário "pular" a cada atualização
-  // automática de dados (a cada 15s) enquanto o usuário está no mesmo dia.
   if (weekCalendarShownDate !== selectedDate) {
     weekCalendar.gotoDate(selectedDate);
     weekCalendarShownDate = selectedDate;
@@ -1043,13 +1391,62 @@ function highlightCurrentHourRows() {
   if (!el) return;
   el.querySelectorAll('.cal-hour-focus').forEach(n => n.classList.remove('cal-hour-focus'));
   const todayStr = new Date().toISOString().slice(0, 10);
-  if (selectedDate !== todayStr) return; // só faz sentido destacar "agora" no dia de hoje
+  if (selectedDate !== todayStr) return;
   const now = new Date();
   const hours = [now.getHours() - 1, now.getHours(), now.getHours() + 1].filter(h => h >= 0 && h <= 23);
   for (const h of hours) {
     const t = String(h).padStart(2, '0') + ':00:00';
     el.querySelectorAll(`[data-time="${t}"]`).forEach(n => n.classList.add('cal-hour-focus'));
   }
+}
+
+// ── Views (sidebar) ─────────────────────────────────────────────────────────
+const VIEWS = ['cal', 'res', 'cfg'];
+function showView(name) {
+  document.getElementById('view-cal').classList.toggle('hidden', name !== 'cal');
+  document.getElementById('view-res').classList.toggle('hidden', name !== 'res');
+  document.getElementById('view-cfg').classList.toggle('hidden', name !== 'cfg');
+  document.querySelectorAll('.side-item').forEach((el, i) => el.classList.toggle('active', VIEWS[i] === name));
+  // Seletor de dia só faz sentido em telas com dado de um dia específico.
+  const showDayNav = name !== 'cfg';
+  document.getElementById('daynav-wrap').classList.toggle('hidden', !showDayNav);
+  document.getElementById('week-range').classList.toggle('hidden', !showDayNav);
+  if (name === 'cfg') loadSettingsData();
+}
+function openSettingsFromBanner() { showView('cfg'); }
+
+// ── Pausar/retomar captura ───────────────────────────────────────────────────
+const PAUSE_ICON = '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>';
+const PLAY_ICON = '<polygon points="5 3 19 12 5 21 5 3"/>';
+let capturePaused = false;
+function applyCaptureState(paused) {
+  capturePaused = paused;
+  document.getElementById('label-pause-toggle').textContent = paused ? 'Retomar captura' : 'Pausar captura';
+  document.getElementById('icon-pause-toggle').innerHTML = paused ? PLAY_ICON : PAUSE_ICON;
+  document.getElementById('status-banner-manual').classList.toggle('hidden', !paused);
+}
+async function toggleCapture() {
+  if (typeof pywebview === 'undefined' || !pywebview.api) return;
+  const r = await pywebview.api.set_capture_paused(!capturePaused);
+  applyCaptureState(r.paused);
+}
+async function initCaptureState() {
+  if (typeof pywebview === 'undefined' || !pywebview.api) return;
+  const r = await pywebview.api.get_capture_state();
+  applyCaptureState(r.paused);
+}
+
+// ── Tema ──────────────────────────────────────────────────────────────────
+function setTheme(mode) {
+  document.documentElement.setAttribute('data-theme', mode === 'light' ? 'light' : '');
+  document.getElementById('theme-btn-dark').classList.toggle('active', mode === 'dark');
+  document.getElementById('theme-btn-light').classList.toggle('active', mode === 'light');
+  if (typeof pywebview !== 'undefined' && pywebview.api) pywebview.api.save_setting('theme', mode);
+}
+async function initTheme() {
+  if (typeof pywebview === 'undefined' || !pywebview.api) return;
+  const s = await pywebview.api.get_settings();
+  if (s.theme === 'light') setTheme('light');
 }
 
 // Inicialização: aguarda pywebview estar pronto, ou inicia direto no navegador
@@ -1059,35 +1456,32 @@ function _startApp() {
   _appStarted = true;
   initWeekCalendar();
   loadData();
+  initTheme();
+  initCaptureState();
   setInterval(loadData, 15000);
 }
 window.addEventListener('pywebviewready', _startApp);
-// Fallback para modo navegador (pywebviewready nunca dispara no browser)
 setTimeout(_startApp, 300);
 
-// ── Settings ──────────────────────────────────────────────────────────────────
+// ── Configurações ─────────────────────────────────────────────────────────
 let _bgEnabled = false;
 let _loginEnabled = false;
 
-async function openSettings() {
-  document.getElementById('settings-overlay').classList.remove('hidden');
-  if (typeof pywebview !== 'undefined' && pywebview.api) {
-    const s = await pywebview.api.get_settings();
-    _bgEnabled = s.background_mode || false;
-    _loginEnabled = s.login_mode || false;
-    const togBg = document.getElementById('tog-bg');
-    if (_bgEnabled) togBg.classList.add('on'); else togBg.classList.remove('on');
-    const togLogin = document.getElementById('tog-login');
-    if (_loginEnabled) togLogin.classList.add('on'); else togLogin.classList.remove('on');
-    const dd = document.getElementById('settings-data-dir');
-    if (dd && s.data_dir) dd.textContent = s.data_dir;
-    await refreshIgnoredChips();
-    const jc = await pywebview.api.get_jira_config();
-    document.getElementById('jira-url').value = jc.base_url || '';
-    document.getElementById('jira-email').value = jc.email || '';
-    document.getElementById('jira-token').placeholder = jc.has_jira_token ? 'Token salvo (deixe em branco p/ manter)' : 'API token do Jira';
-    document.getElementById('tempo-token').placeholder = jc.has_tempo_token ? 'Token salvo (deixe em branco p/ manter)' : 'API token do Tempo';
-  }
+async function loadSettingsData() {
+  if (typeof pywebview === 'undefined' || !pywebview.api) return;
+  const s = await pywebview.api.get_settings();
+  _bgEnabled = s.background_mode || false;
+  _loginEnabled = s.login_mode || false;
+  document.getElementById('tog-bg').classList.toggle('on', _bgEnabled);
+  document.getElementById('tog-login').classList.toggle('on', _loginEnabled);
+  const dd = document.getElementById('settings-data-dir');
+  if (dd && s.data_dir) dd.textContent = s.data_dir;
+  await refreshIgnoredChips();
+  const jc = await pywebview.api.get_jira_config();
+  document.getElementById('jira-url').value = jc.base_url || '';
+  document.getElementById('jira-email').value = jc.email || '';
+  document.getElementById('jira-token').placeholder = jc.has_jira_token ? 'Token salvo (deixe em branco p/ manter)' : 'API token do Jira';
+  document.getElementById('tempo-token').placeholder = jc.has_tempo_token ? 'Token salvo (deixe em branco p/ manter)' : 'API token do Tempo';
 }
 async function saveJiraConfig() {
   if (typeof pywebview === 'undefined' || !pywebview.api) return;
@@ -1119,7 +1513,7 @@ function renderIgnoredChips() {
   const el = document.getElementById('ignored-chips');
   if (!el) return;
   if (!ignoredProcessesList || ignoredProcessesList.length === 0) {
-    el.innerHTML = '<span style="color:var(--text2);font-size:0.76rem;">Nenhum app ignorado</span>';
+    el.innerHTML = '<span style="color:var(--text-muted);font-size:12.5px;">Nenhum app ignorado</span>';
     return;
   }
   el.innerHTML = ignoredProcessesList.map(name => `
@@ -1146,21 +1540,16 @@ async function removeIgnoredProcess(name) {
   await pywebview.api.save_ignored_processes(ignoredProcessesList);
   renderIgnoredChips();
 }
-function closeSettings() {
-  document.getElementById('settings-overlay').classList.add('hidden');
-}
 async function toggleBackground() {
   if (typeof pywebview === 'undefined' || !pywebview.api) return;
   _bgEnabled = !_bgEnabled;
-  const tog = document.getElementById('tog-bg');
-  if (_bgEnabled) tog.classList.add('on'); else tog.classList.remove('on');
+  document.getElementById('tog-bg').classList.toggle('on', _bgEnabled);
   await pywebview.api.save_setting('background_mode', _bgEnabled);
 }
 async function toggleLogin() {
   if (typeof pywebview === 'undefined' || !pywebview.api) return;
   _loginEnabled = !_loginEnabled;
-  const tog = document.getElementById('tog-login');
-  if (_loginEnabled) tog.classList.add('on'); else tog.classList.remove('on');
+  document.getElementById('tog-login').classList.toggle('on', _loginEnabled);
   await pywebview.api.save_setting('login_mode', _loginEnabled);
 }
 async function uninstallApp() {

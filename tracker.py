@@ -38,6 +38,13 @@ if IS_MACOS:
 
 # ─── Configurações ────────────────────────────────────────────────────────────
 def _data_dir() -> Path:
+    # Override pra dev/teste — nunca ler/escrever os dados reais do usuário
+    # sem querer enquanto o app de verdade também pode estar rodando.
+    override = os.environ.get("ACTIVITY_TRACKER_DATA_DIR")
+    if override:
+        d = Path(override)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
     if sys.platform == "darwin":
         d = Path.home() / "Library" / "Application Support" / "ActivityTracker"
     elif sys.platform == "win32":
@@ -515,13 +522,31 @@ def set_ignored_processes(names: list):
     save_tracker_settings(settings)
 
 
+def is_capture_paused() -> bool:
+    """Pausa manual do usuário (botão na toolbar) — diferente de a captura
+    parar sozinha por falta de permissão de Acessibilidade, que é detectado
+    à parte. Lido a cada iteração do loop pra retomar valer no próximo poll."""
+    return bool(load_tracker_settings().get("capture_paused", False))
+
+
+def set_capture_paused(paused: bool):
+    settings = load_tracker_settings()
+    settings["capture_paused"] = bool(paused)
+    save_tracker_settings(settings)
+
+
 # ─── Motor de sessões (agrupa por processo+assunto, com fg/bg contínuos) ──────
 
-MAX_MISSES = 3  # polls seguidos sem ver a janela (~15-20s) tolerados antes de fechar a sessão
+# Tolerância por TEMPO real de ausência, não por contagem de polls. Janelas em
+# segundo plano/não-focadas somem do enumerado (AppleScript/win32) com
+# frequência sem terem sido fechadas de verdade — com uma tolerância curta
+# (antes: 3 polls de 5s = ~15s), uma única sessão de uso contínuo por horas
+# virava dezenas de fragmentos de 20-30s cada vez que a janela reaparecia.
+SESSION_GAP_SECONDS = 15 * 60  # 15 minutos de ausência real antes de considerar a sessão encerrada
 
 
 def _public_session(sess: dict) -> dict:
-    """Remove campos internos (ex: contador de misses) antes de persistir."""
+    """Remove campos internos (ex: timestamp de última vez vista) antes de persistir."""
     return {k: v for k, v in sess.items() if not k.startswith("_")}
 
 
@@ -601,7 +626,7 @@ def capture_multi_window(active_sessions: dict, ignored: set):
             }
             active_sessions[key] = sess
 
-        sess["_misses"] = 0
+        sess["_last_seen"] = now_iso
         sess["end"] = now_iso
         sess["total_seconds"] += INTERVAL_SECONDS
 
@@ -613,16 +638,18 @@ def capture_multi_window(active_sessions: dict, ignored: set):
             else:
                 ranges.append([now_iso, now_iso])
 
-    # Uma janela pode sumir de UM poll por instabilidade do AppleScript (e não
-    # porque foi realmente fechada) — em vez de fechar a sessão na hora, dá
-    # alguns polls de tolerância. Isso evita fragmentar o mesmo app em dezenas
-    # de sessõezinhas quando o System Events falha em listar algo por um poll.
+    # Uma janela pode sumir do enumerado por instabilidade do AppleScript/win32
+    # (e não porque foi realmente fechada) — em vez de fechar a sessão no
+    # primeiro poll que não a viu, só fecha depois de SESSION_GAP_SECONDS de
+    # ausência real. total_seconds/end só avançam no bloco acima (quando a
+    # janela É vista), então o tempo de ausência nunca é contado como uso —
+    # a tolerância só evita fragmentar uma sessão que nunca foi encerrada.
     closed_keys = []
     for key, sess in active_sessions.items():
         if key in seen_keys:
             continue
-        sess["_misses"] = sess.get("_misses", 0) + 1
-        if sess["_misses"] > MAX_MISSES:
+        last_seen = datetime.fromisoformat(sess.get("_last_seen", sess["end"]))
+        if (now - last_seen).total_seconds() > SESSION_GAP_SECONDS:
             closed_keys.append(key)
 
     for k in closed_keys:
@@ -742,6 +769,10 @@ def main():
     try:
         while True:
             try:
+                if is_capture_paused():
+                    time.sleep(INTERVAL_SECONDS)
+                    continue
+
                 window_info = get_active_window_info()
                 teams_log = read_teams_log()
                 entry = build_entry(window_info, teams_log)

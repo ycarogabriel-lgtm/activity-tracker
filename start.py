@@ -229,12 +229,14 @@ class AppApi:
         return path
 
     def get_settings(self):
+        import tracker
         from server import LOG_FILE
         return {
             "background_mode": _background_enabled(),
             "login_mode": _login_enabled(),
             "data_dir": str(LOG_FILE),
             "platform": sys.platform,
+            "theme": tracker.load_tracker_settings().get("theme", "dark"),
         }
 
     def save_setting(self, key, value):
@@ -248,6 +250,29 @@ class AppApi:
                 _enable_login()
             else:
                 _disable_login()
+        elif key == "theme":
+            import tracker
+            settings = tracker.load_tracker_settings()
+            settings["theme"] = value
+            tracker.save_tracker_settings(settings)
+        return True
+
+    def get_capture_state(self):
+        import tracker
+        return {"paused": tracker.is_capture_paused()}
+
+    def set_capture_paused(self, paused):
+        import tracker
+        tracker.set_capture_paused(bool(paused))
+        return {"paused": bool(paused)}
+
+    def get_group_overrides(self):
+        from server import load_group_overrides
+        return load_group_overrides()
+
+    def set_group_override(self, label_key, group_name):
+        from server import set_group_override as _set_override
+        _set_override(label_key, (group_name or "").strip())
         return True
 
     def export_sessions_csv(self, date_filter=None):

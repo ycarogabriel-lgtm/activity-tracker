@@ -21,7 +21,7 @@ Baixe a versão mais recente em [**Releases**](https://github.com/ycarogabriel-l
 
 ### Primeira abertura
 
-O macOS bloqueia apps não assinados pela App Store. Na primeira vez:
+O app já sai assinado (ad-hoc, sem certificado de Developer ID — isso exigiria conta paga da Apple) automaticamente no build, o que evita o erro de "app está corrompido". Mas o Gatekeeper do macOS ainda bloqueia apps baixados da internet que não são notarizados pela Apple. Na primeira vez:
 
 1. Tente abrir o `ActivityTracker.app` com duplo clique
 2. Aparecerá um aviso dizendo que o app não pode ser aberto — clique **OK** ou **Concluído**

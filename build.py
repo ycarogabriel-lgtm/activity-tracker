@@ -80,6 +80,24 @@ def build_daemon_macos():
     daemon_bin.unlink()
 
 
+def codesign_app_macos():
+    """
+    Assina o .app com uma assinatura ad-hoc (sem certificado de Developer ID —
+    este Mac não tem um instalado, e isso exigiria conta paga da Apple). Não
+    elimina o aviso de "desenvolvedor não identificado" do Gatekeeper (só
+    notarização faz isso), mas evita o erro mais grave de "app está
+    corrompido" que builds do PyInstaller sem assinatura nenhuma podem ter,
+    e deixa o binário com uma assinatura válida e consistente a cada build.
+    --deep também assina o daemon embutido em Contents/Resources.
+    """
+    app_path = DIST / f"{NAME}.app"
+    result = subprocess.run([
+        "codesign", "--force", "--deep", "--sign", "-", str(app_path),
+    ])
+    if result.returncode != 0:
+        print("[AVISO] Falha ao assinar o .app — build continua, mas sem assinatura.")
+
+
 def build_dmg():
     """
     Empacota o .app num .dmg — instalação padrão do macOS (abre uma janela
@@ -178,6 +196,7 @@ def build():
     if sys.platform == "darwin":
         out = DIST / f"{NAME}.app"
         build_daemon_macos()
+        codesign_app_macos()
         dmg_path = build_dmg()
     elif sys.platform == "win32":
         out = DIST / f"{NAME}.exe"
