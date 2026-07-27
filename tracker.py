@@ -19,6 +19,32 @@ from pathlib import Path
 IS_MACOS   = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
 
+# Referência guardada de propósito — se o token da atividade for coletado
+# pelo GC, o macOS considera a atividade encerrada e volta a aplicar o App
+# Nap normalmente.
+_app_nap_activity = None
+
+
+def _disable_app_nap():
+    """App Nap do macOS reduz a frequência de timers de processos em segundo
+    plano sem UI ativa (podendo pausar o loop de captura por vários minutos
+    de uma vez) — isso fragmentava sessões que na verdade nunca fecharam,
+    porque o processo simplesmente não rodava um poll de verdade durante o
+    período em que o SO o "cochilou". Registrar uma atividade com essas
+    flags avisa o macOS que este processo precisa continuar rodando pontual,
+    mesmo sem foco/visível."""
+    global _app_nap_activity
+    if not IS_MACOS:
+        return
+    try:
+        import Foundation
+        opts = Foundation.NSActivityUserInitiated | Foundation.NSActivityLatencyCritical
+        _app_nap_activity = Foundation.NSProcessInfo.processInfo().beginActivityWithOptions_reason_(
+            opts, "Rastreamento contínuo de atividade"
+        )
+    except Exception:
+        pass
+
 # ─── Dependências opcionais ───────────────────────────────────────────────────
 WIN32_AVAILABLE = False
 if IS_WINDOWS:
@@ -766,6 +792,8 @@ def main():
     if not _acquire_lock():
         print("[TRACKER] Já está rodando em outro processo. Saindo.")
         return
+
+    _disable_app_nap()
 
     print("=" * 60)
     print("  Activity Tracker - Rastreador de Atividades")
