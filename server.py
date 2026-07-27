@@ -695,7 +695,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .seg-btn { background: transparent; border: none; border-left: 1px solid var(--border); color: var(--text-dim); font-family: var(--sans); font-size: 12.5px; font-weight: 600; padding: 6px 14px; cursor: pointer; }
   .seg-btn:first-child { border-left: none; }
   .seg-btn.active { background: var(--surface-3); color: var(--text); }
-  .ignored-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 4px 6px 4px 12px; font-size: 12px; color: var(--text); }
+  /* span.ignored-chip (não só .ignored-chip): os chips ficam dentro de um
+     .cfg-row, e ".cfg-row span { display:block }" (mais específico —
+     classe+elemento vence classe sozinha) empilhava nome e × verticalmente
+     em vez de lado a lado. */
+  span.ignored-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 4px 6px 4px 12px; font-size: 12px; color: var(--text); }
   .ignored-chip button { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 13px; width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
   .ignored-chip button:hover { background: color-mix(in srgb, var(--danger) 20%, transparent); color: var(--danger); }
 
@@ -919,15 +923,24 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
         <div class="cfg-group">
           <div class="cfg-group-head"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.07 0l2.83-2.83a5 5 0 0 0-7.07-7.07l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.07 0l-2.83 2.83a5 5 0 0 0 7.07 7.07l1.5-1.5"/></svg> Integração Jira / Tempo</div>
-          <input id="jira-url" class="cfg-field" placeholder="URL do Jira (ex: https://suaempresa.atlassian.net)">
-          <input id="jira-email" class="cfg-field" placeholder="Seu e-mail do Jira">
-          <input id="jira-token" class="cfg-field" type="password" placeholder="API token do Jira">
-          <input id="tempo-token" class="cfg-field" type="password" placeholder="API token do Tempo">
-          <div style="display:flex;gap:8px;margin-top:10px;">
-            <button class="btn" onclick="saveJiraConfig()">Salvar</button>
-            <button class="btn" onclick="testJiraConnection()">Testar conexão</button>
+          <!-- Resumo por padrão (proposta de redesign) — só expande o
+               formulário de credenciais quando a pessoa pede, em vez de
+               deixar 4 campos + botões sempre expostos na tela principal. -->
+          <div class="cfg-row">
+            <div><strong>Conta conectada</strong><span id="jira-account-status">Nenhuma conta conectada</span></div>
+            <button class="btn" style="padding:6px 12px;" onclick="toggleJiraForm()">Configurar</button>
           </div>
-          <span id="jira-status" class="modal-hint" style="display:block;margin-top:8px;"></span>
+          <div class="hidden" id="jira-form-box" style="margin-top:4px;">
+            <input id="jira-url" class="cfg-field" placeholder="URL do Jira (ex: https://suaempresa.atlassian.net)">
+            <input id="jira-email" class="cfg-field" placeholder="Seu e-mail do Jira">
+            <input id="jira-token" class="cfg-field" type="password" placeholder="API token do Jira">
+            <input id="tempo-token" class="cfg-field" type="password" placeholder="API token do Tempo">
+            <div style="display:flex;gap:8px;margin-top:10px;">
+              <button class="btn" onclick="saveJiraConfig()">Salvar</button>
+              <button class="btn" onclick="testJiraConnection()">Testar conexão</button>
+            </div>
+            <span id="jira-status" class="modal-hint" style="display:block;margin-top:8px;"></span>
+          </div>
         </div>
 
         <!-- Agrupamento é decisão do usuário, aberta — não regra escondida:
@@ -2041,21 +2054,40 @@ setTimeout(_startApp, 300);
 let _bgEnabled = false;
 let _loginEnabled = false;
 
+function toggleJiraForm() {
+  document.getElementById('jira-form-box').classList.toggle('hidden');
+}
+
+function renderJiraAccountStatus(jc) {
+  const el = document.getElementById('jira-account-status');
+  if (!el) return;
+  const connected = !!(jc && jc.has_jira_token && jc.has_tempo_token && jc.base_url);
+  el.innerHTML = connected
+    ? `${esc(jc.email || jc.base_url)} <span class="status-pill ok" style="margin-left:6px;"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/></svg> Conectado</span>`
+    : 'Nenhuma conta conectada';
+}
+
 async function loadSettingsData() {
-  if (typeof pywebview === 'undefined' || !pywebview.api) return;
-  const s = await pywebview.api.get_settings();
-  _bgEnabled = s.background_mode || false;
-  _loginEnabled = s.login_mode || false;
-  document.getElementById('tog-bg').classList.toggle('on', _bgEnabled);
-  document.getElementById('tog-login').classList.toggle('on', _loginEnabled);
-  const dd = document.getElementById('settings-data-dir');
-  if (dd && s.data_dir) dd.textContent = s.data_dir;
+  // Os toggles e a integração Jira mexem em segredo local do app instalado
+  // (login automático, tokens) — sem equivalente de teste fora dele. A
+  // lista de apps ignorados já tem fallback HTTP (refreshIgnoredChips), então
+  // continua funcionando mesmo sem a ponte do pywebview.
+  if (typeof pywebview !== 'undefined' && pywebview.api) {
+    const s = await pywebview.api.get_settings();
+    _bgEnabled = s.background_mode || false;
+    _loginEnabled = s.login_mode || false;
+    document.getElementById('tog-bg').classList.toggle('on', _bgEnabled);
+    document.getElementById('tog-login').classList.toggle('on', _loginEnabled);
+    const dd = document.getElementById('settings-data-dir');
+    if (dd && s.data_dir) dd.textContent = s.data_dir;
+    const jc = await pywebview.api.get_jira_config();
+    document.getElementById('jira-url').value = jc.base_url || '';
+    document.getElementById('jira-email').value = jc.email || '';
+    document.getElementById('jira-token').placeholder = jc.has_jira_token ? 'Token salvo (deixe em branco p/ manter)' : 'API token do Jira';
+    document.getElementById('tempo-token').placeholder = jc.has_tempo_token ? 'Token salvo (deixe em branco p/ manter)' : 'API token do Tempo';
+    renderJiraAccountStatus(jc);
+  }
   await refreshIgnoredChips();
-  const jc = await pywebview.api.get_jira_config();
-  document.getElementById('jira-url').value = jc.base_url || '';
-  document.getElementById('jira-email').value = jc.email || '';
-  document.getElementById('jira-token').placeholder = jc.has_jira_token ? 'Token salvo (deixe em branco p/ manter)' : 'API token do Jira';
-  document.getElementById('tempo-token').placeholder = jc.has_tempo_token ? 'Token salvo (deixe em branco p/ manter)' : 'API token do Tempo';
 }
 async function saveJiraConfig() {
   if (typeof pywebview === 'undefined' || !pywebview.api) return;
@@ -2067,6 +2099,8 @@ async function saveJiraConfig() {
   document.getElementById('jira-token').value = '';
   document.getElementById('tempo-token').value = '';
   document.getElementById('jira-status').textContent = 'Configuração salva.';
+  const jc = await pywebview.api.get_jira_config();
+  renderJiraAccountStatus(jc);
 }
 async function testJiraConnection() {
   if (typeof pywebview === 'undefined' || !pywebview.api) return;
@@ -2078,9 +2112,12 @@ async function testJiraConnection() {
 let ignoredProcessesList = [];
 
 async function refreshIgnoredChips() {
-  if (typeof pywebview === 'undefined' || !pywebview.api) return;
-  ignoredProcessesList = await pywebview.api.get_ignored_processes();
-  renderIgnoredChips();
+  try {
+    ignoredProcessesList = typeof pywebview !== 'undefined' && pywebview.api
+      ? await pywebview.api.get_ignored_processes()
+      : await (await fetch('/api/ignored_processes')).json();
+    renderIgnoredChips();
+  } catch (err) { /* não crítico pra carregar a tela */ }
 }
 
 function renderIgnoredChips() {
@@ -2096,23 +2133,29 @@ function renderIgnoredChips() {
 }
 
 async function addIgnoredProcess() {
-  if (typeof pywebview === 'undefined' || !pywebview.api) return;
   const input = document.getElementById('ignored-new');
   const name = input.value.trim();
   if (!name) return;
-  if (!ignoredProcessesList.includes(name.toLowerCase())) {
-    ignoredProcessesList = [...ignoredProcessesList, name.toLowerCase()].sort();
-  }
-  await pywebview.api.save_ignored_processes(ignoredProcessesList);
-  input.value = '';
-  renderIgnoredChips();
+  try {
+    await callApi(
+      () => pywebview.api.add_ignored_process(name),
+      '/api/set_ignored_process',
+      { name, ignored: true }
+    );
+    input.value = '';
+    await refreshIgnoredChips();
+  } catch (err) { /* poderia mostrar erro aqui se precisar depurar */ }
 }
 
 async function removeIgnoredProcess(name) {
-  if (typeof pywebview === 'undefined' || !pywebview.api) return;
-  ignoredProcessesList = ignoredProcessesList.filter(n => n !== name);
-  await pywebview.api.save_ignored_processes(ignoredProcessesList);
-  renderIgnoredChips();
+  try {
+    await callApi(
+      () => pywebview.api.remove_ignored_process(name),
+      '/api/set_ignored_process',
+      { name, ignored: false }
+    );
+    await refreshIgnoredChips();
+  } catch (err) { /* idem */ }
 }
 async function toggleBackground() {
   if (typeof pywebview === 'undefined' || !pywebview.api) return;
