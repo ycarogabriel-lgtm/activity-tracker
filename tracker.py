@@ -607,7 +607,16 @@ def capture_multi_window(active_sessions: dict, ignored: set):
         if category == "idle":
             continue
         detail = normalize_detail(detail) or w.get("title", "")
-        key = f"{proc}::{category}::{detail}"
+        # Categoria "app" (janela nativa, não aba de navegador) usa só
+        # processo+categoria como identidade da sessão — o título de apps
+        # nativos costuma refletir estado transitório (pasta atual do
+        # Finder, comando/diretório do Terminal, arquivo aberto), não uma
+        # atividade diferente de verdade. Incluir o detalhe bruto na chave
+        # fragmentava uma janela que nunca foi fechada em dezenas de sessões
+        # só porque o texto do título mudou. Para navegador/Teams o detalhe
+        # continua na chave — ali sim é uma atividade genuinamente diferente
+        # (outra aba, outra reunião).
+        key = f"{proc}::{category}" if category == "app" else f"{proc}::{category}::{detail}"
         seen_keys.add(key)
 
         sess = active_sessions.get(key)
@@ -625,6 +634,10 @@ def capture_multi_window(active_sessions: dict, ignored: set):
                 "foreground_ranges": [],
             }
             active_sessions[key] = sess
+        else:
+            # Mantém o detalhe exibido sempre com o título mais recente,
+            # mesmo a identidade da sessão não mudando com ele.
+            sess["detail"] = detail
 
         sess["_last_seen"] = now_iso
         sess["end"] = now_iso
