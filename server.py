@@ -458,15 +458,31 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
      Cantos de janela e traffic lights vêm do chrome nativo do SO de verdade
      (pywebview já desenha isso) — não replicados aqui dentro. */
   .app-shell { display: flex; min-height: 100vh; position: relative; z-index: 1; }
+  /* Ocupa espaço de verdade no layout (o conteúdo se ajusta ao lado dela,
+     não fica por baixo) — só o VISUAL é "descolado" da referência: margem
+     nas bordas + cantos arredondados, como um painel flutuante à parte,
+     não uma coluna encostada nas bordas da janela. */
   .sidebar {
     width: 208px; flex-shrink: 0;
     background: var(--surface-glass);
     -webkit-backdrop-filter: blur(24px) saturate(180%);
     backdrop-filter: blur(24px) saturate(180%);
-    border-right: 1px solid var(--border-soft);
-    box-shadow: inset -1px 0 0 rgba(255,255,255,.04), 2px 0 24px rgba(0,0,0,.16);
+    border: 1px solid var(--border-soft);
+    border-radius: 16px;
+    box-shadow: 0 8px 28px rgba(0,0,0,.28);
     display: flex; flex-direction: column; padding: 18px 12px;
-    position: relative; z-index: 2;
+    margin: 12px 0 12px 12px;
+    /* sticky: gruda no topo da janela ao rolar, mas nunca passa da altura
+       real do conteúdo — se a página for mais curta que a tela, a sidebar
+       só vai até onde o conteúdo vai, não até o fim da viewport. Sem altura
+       forçada aqui; o próprio flex (align-items:stretch, padrão) já
+       estica ela do tamanho certo. */
+    position: sticky; top: 12px;
+    transition: width .16s ease, margin .16s ease, padding .16s ease, opacity .12s ease;
+    overflow: hidden;
+  }
+  .sidebar.sidebar-closed {
+    width: 0; margin-left: 0; padding-left: 0; padding-right: 0; border-width: 0; opacity: 0;
   }
   .sidebar-logo { padding: 4px 8px 22px; display: block; max-width: 100%; overflow: hidden; }
   .sidebar-logo svg { display: block; height: 16px; width: auto; max-width: 100%; color: var(--text); }
@@ -528,7 +544,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .btn-icon:hover { background: var(--surface-3); color: var(--text); }
   .btn-icon:active { background: var(--surface-2); transform: scale(.92); }
 
-  main { padding: 20px 24px 48px; max-width: 1180px; }
+  main { padding: 20px 24px 48px; width: 100%; }
 
   .status-banner {
     display: flex; align-items: center; gap: 12px;
@@ -569,11 +585,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .date-btn.active { background: var(--accent); border-color: var(--accent); }
   .date-btn.active .dow, .date-btn.active .date-day { color: var(--accent-ink); }
   .date-btn.no-data { opacity: .3; pointer-events: none; }
-  .week-range { font-size: 12.5px; color: var(--text-muted); margin: 8px 24px 0; }
 
-  .section-head { display: flex; align-items: baseline; justify-content: space-between; margin: 20px 0 14px; }
+  .section-head { display: flex; align-items: center; gap: 12px; justify-content: space-between; margin: 20px 0 16px; }
   .section-title { font-size: 17px; font-weight: 700; }
-  .cal-filter { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border-soft); border-radius: 8px; padding: 9px 14px; margin-bottom: 16px; max-width: 340px; }
+  .cal-filter { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border-soft); border-radius: 8px; padding: 9px 14px; max-width: 340px; flex: 1; }
   .cal-filter svg { color: var(--text-muted); flex-shrink: 0; }
   .cal-filter input { background: none; border: none; outline: none; color: var(--text); font-size: 13.5px; width: 100%; font-family: var(--sans); }
   .cal-filter input::placeholder { color: var(--text-muted); }
@@ -758,6 +773,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   <div class="main-col">
     <div class="toolbar">
+      <button class="btn-icon" id="btn-sidebar-toggle" onclick="toggleSidebar()" aria-label="Mostrar/esconder barra lateral"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg></button>
       <div class="toolbar-actions">
         <!-- Pausar/retomar é escolha do usuário — diferente do banner de erro
              (permissão do SO revogada), que é a captura parando sozinha. -->
@@ -786,17 +802,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <div class="days" id="date-nav"></div>
       <button class="day-arrow" id="btn-next-week" onclick="shiftWeek(1)" title="Próxima semana com dados"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 6 15 12 9 18"/></svg></button>
     </div>
-    <div id="week-range" class="week-range"></div>
 
     <main>
       <div id="view-cal">
         <div class="section-head">
-          <div class="section-title">Calendário do dia</div>
+          <div class="cal-filter">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" id="cal-filter-input" oninput="applyCalFilter()" placeholder="Filtrar por nome da atividade..." aria-label="Filtrar atividades do dia">
+          </div>
           <button class="btn" onclick="exportSessionsData()"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9z"/><polyline points="13 3 13 9 19 9"/><path d="M9 15h6"/><polyline points="13 12 16 15 13 18"/></svg> Exportar sessões</button>
-        </div>
-        <div class="cal-filter">
-          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input type="text" id="cal-filter-input" oninput="applyCalFilter()" placeholder="Filtrar por nome da atividade..." aria-label="Filtrar atividades do dia">
         </div>
         <div class="panel" id="week-calendar-panel">
           <div id="week-calendar"></div>
@@ -990,11 +1004,6 @@ function renderDateNav(dates) {
     html += `<button class="${cls}" onclick="selectDate('${d}')"><span class="dow">${DAY_NAMES[dow]}</span><span class="date-day">${day}/${m}</span></button>`;
   }
   document.getElementById('date-nav').innerHTML = html;
-  const wEnd = addDays(currentWeekStart, 6);
-  const [, sm, sd] = currentWeekStart.split('-');
-  const [, em, ed] = wEnd.split('-');
-  const rangeEl = document.getElementById('week-range');
-  if (rangeEl) rangeEl.textContent = `${sd}/${sm} – ${ed}/${em}`;
   const nextBtn = document.getElementById('btn-next-week');
   if (nextBtn) nextBtn.disabled = currentWeekStart >= getWeekStart(today);
   updateWeekCalendar();
@@ -1297,12 +1306,10 @@ function initWeekCalendar() {
     nowIndicator: true,
     allDaySlot: false,
     slotEventOverlap: false,
+    // O seletor de dia acima do calendário já mostra "SEG 27/07" — o
+    // cabeçalho de dia do próprio FullCalendar repetia a mesma informação.
+    dayHeaders: false,
     eventOrder: (a, b) => (b.extendedProps.session?.total_seconds || 0) - (a.extendedProps.session?.total_seconds || 0),
-    dayHeaderContent: (arg) => {
-      const day = String(arg.date.getDate()).padStart(2, '0');
-      const month = String(arg.date.getMonth() + 1).padStart(2, '0');
-      return `${DAY_NAMES[arg.date.getDay()]} ${day}/${month}`;
-    },
     events: [],
     eventContent: renderCalendarEventContent,
     eventClick: (info) => {
@@ -1450,7 +1457,7 @@ function highlightCurrentHourRows() {
 // A hora usada pra (1) vem do horário real da sessão (session.start), não
 // de geometria — mais simples e sem os problemas de detecção por
 // coordenada/ancestralidade do DOM que a linha de fundo tem sozinha.
-const HOVER_EVENT_MIN_HEIGHT = 64;
+const HOVER_EVENT_MIN_HEIGHT = 128;
 
 function initEventHoverCard() {
   const el = document.getElementById('week-calendar');
@@ -1531,6 +1538,10 @@ function initEventHoverCard() {
 }
 
 // ── Views (sidebar) ─────────────────────────────────────────────────────────
+function toggleSidebar() {
+  document.querySelector('.sidebar').classList.toggle('sidebar-closed');
+}
+
 const VIEWS = ['cal', 'res', 'cfg'];
 function showView(name) {
   document.getElementById('view-cal').classList.toggle('hidden', name !== 'cal');
@@ -1540,7 +1551,6 @@ function showView(name) {
   // Seletor de dia só faz sentido em telas com dado de um dia específico.
   const showDayNav = name !== 'cfg';
   document.getElementById('daynav-wrap').classList.toggle('hidden', !showDayNav);
-  document.getElementById('week-range').classList.toggle('hidden', !showDayNav);
   if (name === 'cfg') loadSettingsData();
 }
 function openSettingsFromBanner() { showView('cfg'); }
