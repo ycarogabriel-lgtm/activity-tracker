@@ -1837,10 +1837,34 @@ function updateWeekCalendar() {
     // momento, nem quando ela está "livre" no meio do dia. É a coluna
     // invisível: o mesmo rótulo pode voltar a aparecer nela mais tarde, mas
     // um rótulo DIFERENTE nunca entra ali.
-    const visibleGroups = groupSessionsByLabel(day.sessions).filter(g => {
+    const rawGroups = groupSessionsByLabel(day.sessions).filter(g => {
       const label = (g.groupLabel || g.detail || g.process || '').toLowerCase();
       return !calFilterTerm || label.includes(calFilterTerm);
     });
+
+    // Funde grupos que têm chaves internas diferentes mas o MESMO nome
+    // visível (ex.: "Activity Tracker" capturado com processo/detalhe bruto
+    // levemente diferente entre uma captura e outra, por instabilidade da
+    // enumeração de janelas) — sem isso, cada variação virava um fragmento
+    // picado à parte E podia abrir uma raia nova só pra si. O nome é a
+    // identidade de verdade pro calendário; a chave fina (g.key) só importa
+    // pra atribuir código/agrupamento manual ao clicar num bloco específico.
+    const byName = new Map();
+    for (const g of rawGroups) {
+      // Normaliza (espaço solto, maiúscula/minúscula) — a diferença que
+      // fragmenta na captura costuma ser exatamente esse tipo de ruído
+      // invisível a olho nu, não uma mudança real de nome.
+      const nameKey = (g.displayLabel || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const existing = byName.get(nameKey);
+      if (existing) {
+        existing.items.push(...g.items);
+        if (g.start < existing.start) existing.start = g.start;
+        if (g.end > existing.end) existing.end = g.end;
+      } else {
+        byName.set(nameKey, { ...g, items: [...g.items] });
+      }
+    }
+    const visibleGroups = [...byName.values()];
     visibleGroups.sort((a, b) => a.start.localeCompare(b.start));
     const totalCols = visibleGroups.length || 1;
 
