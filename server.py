@@ -622,11 +622,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #week-calendar .fc-timegrid-slot, #week-calendar .fc-timegrid-col { border-color: var(--border-soft); }
   #week-calendar .fc-timegrid-now-indicator-line { border-color: var(--accent); }
   #week-calendar .fc-timegrid-now-indicator-arrow { border-color: var(--accent); color: var(--accent); }
-  /* Mais espaço vertical pra hora anterior/atual/seguinte — mais chance de
-     ter várias atividades concorrentes pra examinar ali. */
+  /* Destaque sutil pra hora anterior/atual/seguinte — só sinaliza "é agora"
+     (o fundo da grade, não o bloco do evento em cima, que é posicionado à
+     parte). Um pouco mais alto que o normal, não um bloco enorme. */
   #week-calendar .fc-timegrid-slot-lane.cal-hour-focus,
-  #week-calendar .fc-timegrid-slot-label.cal-hour-focus { height: 90px !important; background: color-mix(in srgb, var(--accent) 6%, transparent); }
-  .fc-sess-event { position: relative; height: 100%; width: 100%; border-radius: 6px; overflow: hidden; padding: 1px; font-size: .65rem; color: #fff; cursor: pointer; }
+  #week-calendar .fc-timegrid-slot-label.cal-hour-focus { height: 45px !important; background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  /* Linha da hora sob o evento em hover — cresce junto com o bloco do
+     evento (redimensionado à parte, via JS, no harness dele). */
+  #week-calendar .fc-timegrid-slot-lane.cal-hour-hover,
+  #week-calendar .fc-timegrid-slot-label.cal-hour-hover { height: 72px !important; background: var(--surface-3); }
+  .fc-sess-event { position: relative; height: 100%; width: 100%; border-radius: 6px; overflow: hidden; padding: 1px; font-size: .65rem; color: #fff; cursor: pointer; transition: height .1s; }
   /* Cartão flutuante com o texto completo ao passar o mouse num evento. Não
      tenta redimensionar a grade do FullCalendar — os eventos são
      posicionados por pixel numa camada própria (.fc-timegrid-col-events),
@@ -1435,6 +1440,18 @@ function highlightCurrentHourRows() {
 // acompanhar (só a grade invisível atrás dele crescia). O cartão é anexado
 // direto no <body>, position:fixed, então escapa de qualquer
 // overflow:hidden dos containers de scroll internos do FullCalendar.
+// Hover num evento: (1) cresce a LINHA da hora de fundo (mesmo mecanismo
+// visual da hora atual, .cal-hour-focus/.cal-hour-hover), (2) cresce o
+// PRÓPRIO bloco do evento (ele é posicionado por pixel via inline style no
+// harness — .fc-timegrid-event-harness — pelo FullCalendar, desacoplado da
+// tabela, então crescer a linha sozinha nunca fazia o bloco acompanhar; aqui
+// o harness é redimensionado direto), e (3) mostra o cartão flutuante com o
+// texto completo, pra quando mesmo maior o bloco ainda não couber tudo.
+// A hora usada pra (1) vem do horário real da sessão (session.start), não
+// de geometria — mais simples e sem os problemas de detecção por
+// coordenada/ancestralidade do DOM que a linha de fundo tem sozinha.
+const HOVER_EVENT_MIN_HEIGHT = 64;
+
 function initEventHoverCard() {
   const el = document.getElementById('week-calendar');
   if (!el) return;
@@ -1443,11 +1460,42 @@ function initEventHoverCard() {
   card.className = 'hidden';
   document.body.appendChild(card);
 
+  function hourKeysForSession(s) {
+    const startH = parseInt(s.start.slice(11, 13), 10);
+    const endH = parseInt(s.end.slice(11, 13), 10);
+    const keys = [];
+    for (let h = startH; h <= endH && h <= 23; h++) keys.push(String(h).padStart(2, '0') + ':00:00');
+    return keys;
+  }
+
   el.addEventListener('mouseover', (e) => {
     const target = e.target.closest('.fc-sess-event');
     if (!target || card.dataset.forTarget === String(target._chcId)) return;
     const s = target._chcSession;
     if (!s) return;
+
+    // (1) linha de fundo
+    el.querySelectorAll('.cal-hour-hover').forEach(n => n.classList.remove('cal-hour-hover'));
+    for (const t of hourKeysForSession(s)) {
+      el.querySelectorAll(`[data-time="${t}"]`).forEach(n => n.classList.add('cal-hour-hover'));
+    }
+
+    // (2) o bloco do evento em si — guarda a altura/topo originais uma vez
+    // só (não sobrescreve de novo se já estava salvo de um hover anterior).
+    const harness = target.closest('.fc-timegrid-event-harness');
+    if (harness) {
+      if (harness.dataset.origHeight === undefined) {
+        harness.dataset.origHeight = harness.style.height || '';
+        harness.dataset.origZ = harness.style.zIndex || '';
+      }
+      const curHeight = parseFloat(harness.style.height) || 0;
+      if (curHeight < HOVER_EVENT_MIN_HEIGHT) {
+        harness.style.height = HOVER_EVENT_MIN_HEIGHT + 'px';
+      }
+      harness.style.zIndex = 30;
+    }
+
+    // (3) cartão flutuante com o texto completo, de qualquer forma
     const label = s.displayLabel || s.groupLabel || s.detail || s.process || '';
     const range = `${s.start.slice(11, 16)}–${s.end.slice(11, 16)} · ${fmtDur(s.total_seconds)} no total, ${fmtDur(s.foreground_seconds)} em foco`;
     card.innerHTML = `<div class="chc-title">${esc(label)}</div><div class="chc-time">${esc(range)}</div>`;
@@ -1468,6 +1516,15 @@ function initEventHoverCard() {
     if (!leavingEvent) return;
     const to = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('.fc-sess-event') : null;
     if (to === leavingEvent) return;
+
+    const harness = leavingEvent.closest('.fc-timegrid-event-harness');
+    if (harness && harness.dataset.origHeight !== undefined) {
+      harness.style.height = harness.dataset.origHeight;
+      harness.style.zIndex = harness.dataset.origZ;
+      delete harness.dataset.origHeight;
+      delete harness.dataset.origZ;
+    }
+    el.querySelectorAll('.cal-hour-hover').forEach(n => n.classList.remove('cal-hour-hover'));
     card.classList.add('hidden');
     delete card.dataset.forTarget;
   });
