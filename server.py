@@ -766,12 +766,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .modal-group-option {
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
     width: 100%; background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: 8px;
-    padding: 11px 14px; font-size: 13.5px; font-family: var(--sans); color: var(--text-dim); cursor: pointer;
-    text-align: left; transition: background .1s, border-color .1s, color .1s;
+    padding: 9px 9px 9px 14px; font-size: 13.5px; font-family: var(--sans); color: var(--text-dim);
+    transition: background .1s, border-color .1s, color .1s;
   }
-  .modal-group-option:hover { background: var(--surface-3); color: var(--text); }
   .modal-group-option.active { background: color-mix(in srgb, var(--accent) 14%, var(--surface-2)); border-color: var(--accent); color: var(--text); font-weight: 600; }
-  .modal-group-option svg { width: 15px; height: 15px; color: var(--accent); flex-shrink: 0; }
+  .modal-group-option svg { width: 15px; height: 15px; color: var(--accent); flex-shrink: 0; vertical-align: -2px; }
   .modal-group-create { margin-top: 10px; }
   .modal-group-create-toggle { background: none; border: none; color: var(--text-muted); font-size: 12.5px; font-family: var(--sans); cursor: pointer; padding: 4px 0; }
   .modal-group-create-toggle:hover { color: var(--text-dim); }
@@ -1378,11 +1377,14 @@ function renderGroupTab(row, label) {
 
   const listHtml = modalGroupNames.length ? `
     <div class="modal-group-list">
-      ${modalGroupNames.map(name => `
-        <button type="button" class="modal-group-option ${name === currentGroup ? 'active' : ''}" onclick="assignModalGroup(${JSON.stringify(name)})">
-          <span>${esc(name)}</span>
-          ${name === currentGroup ? '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>' : ''}
-        </button>`).join('')}
+      ${modalGroupNames.map(name => {
+        const isActive = name === currentGroup;
+        return `
+        <div class="modal-group-option ${isActive ? 'active' : ''}">
+          <span>${esc(name)}${isActive ? ' <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>' : ''}</span>
+          <button type="button" class="btn" style="padding:6px 16px;flex-shrink:0;" onclick="assignModalGroup(${esc(JSON.stringify(name))})">${isActive ? 'Sair' : 'Entrar'}</button>
+        </div>`;
+      }).join('')}
     </div>` : `<div class="modal-hint" style="margin-top:0;">Nenhum grupo criado ainda — crie um abaixo.</div>`;
 
   return `
@@ -1404,7 +1406,7 @@ function renderGroupTab(row, label) {
           ${otherMembers.map(([k]) => `
             <div class="modal-group-member">
               <span>${esc(friendlyFromKey(k))}</span>
-              <button class="btn-icon" style="width:22px;height:22px;flex-shrink:0;" aria-label="Remover do grupo" onclick="ungroupModalMember(${JSON.stringify(k)})"><svg class="icon" style="width:11px;height:11px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+              <button class="btn-icon" style="width:22px;height:22px;flex-shrink:0;" aria-label="Remover do grupo" onclick="ungroupModalMember(${esc(JSON.stringify(k))})"><svg class="icon" style="width:11px;height:11px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
             </div>`).join('')}
         </div>` : ''}
     </div>`;
