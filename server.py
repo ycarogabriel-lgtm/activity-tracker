@@ -627,6 +627,27 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #week-calendar .fc-timegrid-slot-lane.cal-hour-focus,
   #week-calendar .fc-timegrid-slot-label.cal-hour-focus { height: 90px !important; background: color-mix(in srgb, var(--accent) 6%, transparent); }
   .fc-sess-event { position: relative; height: 100%; width: 100%; border-radius: 6px; overflow: hidden; padding: 1px; font-size: .65rem; color: #fff; cursor: pointer; }
+  /* Cartão flutuante com o texto completo ao passar o mouse num evento. Não
+     tenta redimensionar a grade do FullCalendar — os eventos são
+     posicionados por pixel numa camada própria (.fc-timegrid-col-events),
+     desacoplada da tabela de fundo, então crescer a linha da hora nunca
+     fazia o bloco do evento acompanhar (só a grade invisível atrás dele).
+     Anexado direto no <body> (não dentro do calendário), position:fixed —
+     assim escapa de qualquer overflow:hidden dos containers de scroll
+     internos do FullCalendar. */
+  #cal-hover-card {
+    position: fixed; z-index: 900; pointer-events: none;
+    background: var(--surface-glass);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 12px 32px rgba(0,0,0,.4);
+    padding: 10px 14px; max-width: 320px;
+    font-size: 13px; color: var(--text); line-height: 1.4;
+  }
+  #cal-hover-card .chc-title { font-weight: 700; margin-bottom: 3px; }
+  #cal-hover-card .chc-time { font-family: var(--mono); font-size: 11.5px; color: var(--text-muted); }
+  #cal-hover-card.hidden { display: none; }
   .fc-sess-bg { position: absolute; inset: 0; opacity: .18; }
   .fc-sess-fg { position: absolute; left: 0; right: 0; opacity: 1; }
   .fc-sess-content { position: relative; z-index: 1; background: rgba(10,10,12,.82); padding: 4px 7px; display: inline-block; max-width: 100%; border-radius: 0 0 6px 0; }
@@ -1285,6 +1306,7 @@ function initWeekCalendar() {
     },
   });
   weekCalendar.render();
+  initEventHoverCard();
 }
 
 function darkenColor(hex, amount) {
@@ -1315,7 +1337,11 @@ function renderCalendarEventContent(arg) {
   const wrap = document.createElement('div');
   wrap.className = 'fc-sess-event';
   wrap.style.borderLeft = `4px solid ${edgeColor}`;
-  wrap.title = `${label} — ${fmtDur(s.total_seconds)} no total, ${fmtDur(s.foreground_seconds)} em foco`;
+  // Sem wrap.title — o tooltip nativo do navegador some depois de alguns
+  // segundos e duplicaria o cartão flutuante (initEventHoverCard) mostrando
+  // a mesma informação de dois jeitos diferentes ao mesmo tempo.
+  wrap._chcSession = s;
+  wrap._chcId = s.id || (s.process + s.category + s.detail + s.start);
   wrap.innerHTML = `<div class="fc-sess-bg" style="background:${color}"></div>${fgHtml}<div class="fc-sess-content"><span class="fc-sess-label">${esc(label)}</span></div>`;
   return { domNodes: [wrap] };
 }
@@ -1398,6 +1424,53 @@ function highlightCurrentHourRows() {
     const t = String(h).padStart(2, '0') + ':00:00';
     el.querySelectorAll(`[data-time="${t}"]`).forEach(n => n.classList.add('cal-hour-focus'));
   }
+}
+
+// Cartão flutuante com o texto completo ao passar o mouse num evento —
+// blocos curtos empilhados na mesma hora não têm pixel vertical pra mostrar
+// o rótulo sem cortar. Não tenta redimensionar a grade do FullCalendar: os
+// eventos são posicionados por pixel numa camada própria
+// (.fc-timegrid-col-events), desacoplada da tabela de fundo — confirmado
+// depurando que crescer a linha da hora nunca fazia o bloco do evento
+// acompanhar (só a grade invisível atrás dele crescia). O cartão é anexado
+// direto no <body>, position:fixed, então escapa de qualquer
+// overflow:hidden dos containers de scroll internos do FullCalendar.
+function initEventHoverCard() {
+  const el = document.getElementById('week-calendar');
+  if (!el) return;
+  const card = document.createElement('div');
+  card.id = 'cal-hover-card';
+  card.className = 'hidden';
+  document.body.appendChild(card);
+
+  el.addEventListener('mouseover', (e) => {
+    const target = e.target.closest('.fc-sess-event');
+    if (!target || card.dataset.forTarget === String(target._chcId)) return;
+    const s = target._chcSession;
+    if (!s) return;
+    const label = s.displayLabel || s.groupLabel || s.detail || s.process || '';
+    const range = `${s.start.slice(11, 16)}–${s.end.slice(11, 16)} · ${fmtDur(s.total_seconds)} no total, ${fmtDur(s.foreground_seconds)} em foco`;
+    card.innerHTML = `<div class="chc-title">${esc(label)}</div><div class="chc-time">${esc(range)}</div>`;
+    card.dataset.forTarget = String(target._chcId);
+
+    const r = target.getBoundingClientRect();
+    card.classList.remove('hidden');
+    const cardRect = card.getBoundingClientRect();
+    let left = r.left;
+    let top = r.bottom + 6;
+    if (left + cardRect.width > window.innerWidth - 12) left = window.innerWidth - cardRect.width - 12;
+    if (top + cardRect.height > window.innerHeight - 12) top = r.top - cardRect.height - 6;
+    card.style.left = Math.max(8, left) + 'px';
+    card.style.top = Math.max(8, top) + 'px';
+  });
+  el.addEventListener('mouseout', (e) => {
+    const leavingEvent = e.target.closest('.fc-sess-event');
+    if (!leavingEvent) return;
+    const to = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('.fc-sess-event') : null;
+    if (to === leavingEvent) return;
+    card.classList.add('hidden');
+    delete card.dataset.forTarget;
+  });
 }
 
 // ── Views (sidebar) ─────────────────────────────────────────────────────────
