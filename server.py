@@ -536,9 +536,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .btn-primary:active { background: var(--accent-strong); transform: scale(.96); }
   .btn-danger-o { color: var(--danger); }
   .btn-danger-o:hover { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+  /* Mesmo padrão do .btn: vidro + sombra já em repouso, não só no hover. */
   .btn-icon {
     width: 32px; height: 32px; padding: 0; justify-content: center;
-    background: transparent; border: 1px solid transparent; border-radius: 50%; color: var(--text-dim); cursor: pointer;
+    background: var(--btn-glass);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+    backdrop-filter: blur(16px) saturate(180%);
+    border: 1px solid var(--border-soft);
+    box-shadow: 0 1px 3px rgba(0,0,0,.18), 0 1px 1px rgba(0,0,0,.1);
+    border-radius: 50%; color: var(--text-dim); cursor: pointer;
     transition: background .1s, transform .1s, color .1s;
   }
   .btn-icon:hover { background: var(--surface-3); color: var(--text); }
