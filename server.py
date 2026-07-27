@@ -472,12 +472,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     box-shadow: 0 8px 28px rgba(0,0,0,.28);
     display: flex; flex-direction: column; padding: 18px 12px;
     margin: 12px 0 12px 12px;
-    /* sticky: gruda no topo da janela ao rolar, mas nunca passa da altura
-       real do conteúdo — se a página for mais curta que a tela, a sidebar
-       só vai até onde o conteúdo vai, não até o fim da viewport. Sem altura
-       forçada aqui; o próprio flex (align-items:stretch, padrão) já
-       estica ela do tamanho certo. */
-    position: sticky; top: 12px;
+    /* Fixa na janela o tempo todo (igual Mail/Finder) — o conteúdo principal
+       é praticamente sempre mais alto que a tela (calendário de 24h), então
+       "só até a altura do conteúdo" na prática nunca deixava ela realmente
+       fixa: descolava e "subia" assim que a página tinha qualquer scroll. */
+    position: fixed; top: 12px; bottom: 12px;
     transition: width .16s ease, margin .16s ease, padding .16s ease, opacity .12s ease;
     overflow: hidden;
   }
@@ -500,7 +499,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .tab-badge { font-family: var(--mono); font-size: 11px; background: var(--surface-3); color: var(--text-muted); padding: 1px 7px; border-radius: 999px; margin-left: auto; }
   .side-item.active .tab-badge { background: var(--ground); color: var(--accent); }
 
-  .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  /* Sidebar é fixed (fora do fluxo) — reserva o espaço dela aqui manualmente
+     (208px + 12px de margem dos dois lados). Recolhe quando ela fecha. */
+  .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; margin-left: 232px; transition: margin-left .16s ease; }
+  .sidebar.sidebar-closed + .main-col { margin-left: 0; }
   /* Só agrupamento em linha — sem caixa, sem vidro, sem borda própria aqui.
      Os botões é que flutuam soltos (vidro + sombra ficam neles, não numa
      barra por trás agrupando tudo). */
@@ -594,7 +596,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   .section-head { display: flex; align-items: center; gap: 12px; justify-content: space-between; margin: 20px 0 16px; }
   .section-title { font-size: 17px; font-weight: 700; }
-  .cal-filter { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border-soft); border-radius: 8px; padding: 9px 14px; max-width: 340px; flex: 1; }
+  /* min-height/padding batendo exatamente com .btn — ficavam com alturas
+     visualmente diferentes na mesma linha (section-head). */
+  .cal-filter { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border-soft); border-radius: 8px; padding: 7px 14px; min-height: 32px; box-sizing: border-box; max-width: 340px; flex: 1; }
   .cal-filter svg { color: var(--text-muted); flex-shrink: 0; }
   .cal-filter input { background: none; border: none; outline: none; color: var(--text); font-size: 13.5px; width: 100%; font-family: var(--sans); }
   .cal-filter input::placeholder { color: var(--text-muted); }
@@ -1296,6 +1300,7 @@ function renderTopPanel(title, details, cats, color1, color2) {
 let weekCalendar = null;
 let weekCalendarShownDate = null;
 let calFilterTerm = '';
+const EVENT_MIN_HEIGHT = 128;
 
 function initWeekCalendar() {
   if (weekCalendar || typeof FullCalendar === 'undefined') return;
@@ -1321,6 +1326,14 @@ function initWeekCalendar() {
     eventClick: (info) => {
       const g = info.event.extendedProps.session;
       if (g) renderSessionModal(g);
+    },
+    // Altura mínima SEMPRE ativa (não só no hover) — eventos curtos viravam
+    // uma tira de ~11px, ilegível de cara, sem precisar interagir com nada.
+    eventDidMount: (info) => {
+      const harness = info.el.closest('.fc-timegrid-event-harness');
+      if (!harness) return;
+      const h = parseFloat(harness.style.height) || 0;
+      if (h < EVENT_MIN_HEIGHT) harness.style.height = EVENT_MIN_HEIGHT + 'px';
     },
   });
   weekCalendar.render();
@@ -1453,33 +1466,61 @@ function highlightCurrentHourRows() {
 // acompanhar (só a grade invisível atrás dele crescia). O cartão é anexado
 // direto no <body>, position:fixed, então escapa de qualquer
 // overflow:hidden dos containers de scroll internos do FullCalendar.
-// Hover num evento: (1) cresce a LINHA da hora de fundo (mesmo mecanismo
-// visual da hora atual, .cal-hour-focus/.cal-hour-hover), (2) cresce o
-// PRÓPRIO bloco do evento (ele é posicionado por pixel via inline style no
-// harness — .fc-timegrid-event-harness — pelo FullCalendar, desacoplado da
-// tabela, então crescer a linha sozinha nunca fazia o bloco acompanhar; aqui
-// o harness é redimensionado direto), e (3) mostra o cartão flutuante com o
-// texto completo, pra quando mesmo maior o bloco ainda não couber tudo.
-// A hora usada pra (1) vem do horário real da sessão (session.start), não
-// de geometria — mais simples e sem os problemas de detecção por
-// coordenada/ancestralidade do DOM que a linha de fundo tem sozinha.
-const HOVER_EVENT_MIN_HEIGHT = 128;
+//
+// Duas coisas independentes, não uma:
+// 1) Crescer a LINHA da hora sob o cursor (fundo da tabela) — funciona em
+//    cima de evento OU de área vazia, porque a detecção é por POSIÇÃO do
+//    cursor contra o retângulo de cada linha, não por estar dentro de um
+//    evento. Não redimensiona o bloco do evento em si — só destaca a faixa
+//    de fundo daquela hora específica.
+// 2) Cartão flutuante com o texto completo quando o cursor está sobre um
+//    evento especificamente — independente do hover de linha.
+let _hoveredHour = null;
+let _hourRowRects = null;
+
+function _refreshHourRowRects(el) {
+  const seen = new Set();
+  const rects = [];
+  el.querySelectorAll('.fc-timegrid-slot-lane[data-time]').forEach((n) => {
+    const t = n.getAttribute('data-time');
+    if (seen.has(t)) return;
+    seen.add(t);
+    const r = n.getBoundingClientRect();
+    rects.push({ t, top: r.top, bottom: r.bottom });
+  });
+  _hourRowRects = rects;
+}
+
+function initHourRowHover(el) {
+  el.addEventListener('mousemove', (e) => {
+    _refreshHourRowRects(el);
+    const hit = _hourRowRects.find((r) => e.clientY >= r.top && e.clientY < r.bottom);
+    const t = hit ? hit.t : null;
+    if (t === _hoveredHour) return;
+    if (_hoveredHour !== null) {
+      el.querySelectorAll(`[data-time="${_hoveredHour}"]`).forEach(n => n.classList.remove('cal-hour-hover'));
+    }
+    _hoveredHour = t;
+    if (t !== null) {
+      el.querySelectorAll(`[data-time="${t}"]`).forEach(n => n.classList.add('cal-hour-hover'));
+    }
+  });
+  el.addEventListener('mouseleave', () => {
+    if (_hoveredHour === null) return;
+    el.querySelectorAll(`[data-time="${_hoveredHour}"]`).forEach(n => n.classList.remove('cal-hour-hover'));
+    _hoveredHour = null;
+  });
+}
 
 function initEventHoverCard() {
   const el = document.getElementById('week-calendar');
   if (!el) return;
+  initHourRowHover(el);
+
   const card = document.createElement('div');
   card.id = 'cal-hover-card';
   card.className = 'hidden';
   document.body.appendChild(card);
-
-  function hourKeysForSession(s) {
-    const startH = parseInt(s.start.slice(11, 13), 10);
-    const endH = parseInt(s.end.slice(11, 13), 10);
-    const keys = [];
-    for (let h = startH; h <= endH && h <= 23; h++) keys.push(String(h).padStart(2, '0') + ':00:00');
-    return keys;
-  }
 
   el.addEventListener('mouseover', (e) => {
     const target = e.target.closest('.fc-sess-event');
@@ -1487,28 +1528,6 @@ function initEventHoverCard() {
     const s = target._chcSession;
     if (!s) return;
 
-    // (1) linha de fundo
-    el.querySelectorAll('.cal-hour-hover').forEach(n => n.classList.remove('cal-hour-hover'));
-    for (const t of hourKeysForSession(s)) {
-      el.querySelectorAll(`[data-time="${t}"]`).forEach(n => n.classList.add('cal-hour-hover'));
-    }
-
-    // (2) o bloco do evento em si — guarda a altura/topo originais uma vez
-    // só (não sobrescreve de novo se já estava salvo de um hover anterior).
-    const harness = target.closest('.fc-timegrid-event-harness');
-    if (harness) {
-      if (harness.dataset.origHeight === undefined) {
-        harness.dataset.origHeight = harness.style.height || '';
-        harness.dataset.origZ = harness.style.zIndex || '';
-      }
-      const curHeight = parseFloat(harness.style.height) || 0;
-      if (curHeight < HOVER_EVENT_MIN_HEIGHT) {
-        harness.style.height = HOVER_EVENT_MIN_HEIGHT + 'px';
-      }
-      harness.style.zIndex = 30;
-    }
-
-    // (3) cartão flutuante com o texto completo, de qualquer forma
     const label = s.displayLabel || s.groupLabel || s.detail || s.process || '';
     const range = `${s.start.slice(11, 16)}–${s.end.slice(11, 16)} · ${fmtDur(s.total_seconds)} no total, ${fmtDur(s.foreground_seconds)} em foco`;
     card.innerHTML = `<div class="chc-title">${esc(label)}</div><div class="chc-time">${esc(range)}</div>`;
@@ -1529,15 +1548,6 @@ function initEventHoverCard() {
     if (!leavingEvent) return;
     const to = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('.fc-sess-event') : null;
     if (to === leavingEvent) return;
-
-    const harness = leavingEvent.closest('.fc-timegrid-event-harness');
-    if (harness && harness.dataset.origHeight !== undefined) {
-      harness.style.height = harness.dataset.origHeight;
-      harness.style.zIndex = harness.dataset.origZ;
-      delete harness.dataset.origHeight;
-      delete harness.dataset.origZ;
-    }
-    el.querySelectorAll('.cal-hour-hover').forEach(n => n.classList.remove('cal-hour-hover'));
     card.classList.add('hidden');
     delete card.dataset.forTarget;
   });
