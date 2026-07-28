@@ -1735,8 +1735,19 @@ function initWeekCalendar() {
     eventDidMount: (info) => {
       const harness = info.el.closest('.fc-timegrid-event-harness');
       if (!harness) return;
-      const h = parseFloat(harness.style.height) || 0;
-      if (h < 32) harness.style.height = '32px';
+      // Harness no modo "-inset" do FullCalendar (classe aplicada quando
+      // ele acha que tem empilhamento — fc-timegrid-event-harness-inset)
+      // nunca seta uma altura explícita, usa "bottom" em vez disso — ler
+      // harness.style.height sempre vinha vazio/0 pra esses casos, forçando
+      // o clamp de altura mínima pra 32px em QUALQUER duração (um evento de
+      // 43min saía do mesmo tamanho que um de 15min). Calcula a altura real
+      // a partir da duração de verdade do evento, sem confiar no que o
+      // FullCalendar colocou no harness.
+      const totalMinutes = (info.event.end - info.event.start) / 60000;
+      const pxPerMinute = 1560 / (24 * 60); // precisa bater com height: do Calendar acima
+      const naturalHeight = totalMinutes * pxPerMinute;
+      harness.style.height = Math.max(naturalHeight, 32) + 'px';
+      harness.style.bottom = 'auto';
       // Ignora o left/right que o próprio FullCalendar calculou (tem casos
       // reais em que ele erra a divisão com vários eventos concorrentes) —
       // cada rótulo já tem sua coluna fixa decidida em updateWeekCalendar,
