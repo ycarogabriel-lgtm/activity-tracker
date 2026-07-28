@@ -21,7 +21,7 @@ Baixe a versão mais recente em [**Releases**](https://github.com/ycarogabriel-l
 
 ### Primeira abertura
 
-O `.dmg` já sai assinado (ad-hoc, sem certificado de Developer ID — isso exigiria conta paga da Apple) no build, mas isso é assinado na máquina que compilou, não na sua — o Gatekeeper do macOS ainda bloqueia o app na primeira vez porque ele foi baixado da internet. A assinatura que resolve isso de verdade é feita **no seu próprio Mac**, depois que o app já está na pasta Applications. Abra o Terminal e cole:
+O Gatekeeper do macOS bloqueia o ActivityTracker.app na primeira vez porque ele foi baixado da internet. A assinatura que resolve isso de verdade é feita **no seu próprio Mac**, depois que o app já está na pasta Applications. Abra o Terminal e cole:
 
 ```bash
 xattr -cr /Applications/ActivityTracker.app
